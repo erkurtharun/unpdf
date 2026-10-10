@@ -124,3 +124,22 @@ fn the_retired_bit_is_inert_and_not_reused() {
         "flag values are part of the C ABI: existing bits keep their meaning"
     );
 }
+
+/// The refine flag in a build without the `refine` feature is refused — by both markdown
+/// entry points, which read the same bitmask — rather than rendering un-refined output as
+/// if the pass had run.
+#[cfg(not(feature = "refine"))]
+#[test]
+fn the_refine_flag_without_the_feature_is_rejected() {
+    use unpdf::ffi::{unpdf_last_error_kind, UNPDF_ERROR_INVALID_ARGUMENT, UNPDF_FLAG_REFINE};
+    let bytes = text_pdf();
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!doc.is_null());
+        assert!(unpdf_to_markdown(doc, UNPDF_FLAG_REFINE).is_null());
+        assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_ARGUMENT);
+        assert!(unpdf_page_to_markdown(doc, 1, UNPDF_FLAG_REFINE).is_null());
+        assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_ARGUMENT);
+        unpdf_free_document(doc);
+    }
+}

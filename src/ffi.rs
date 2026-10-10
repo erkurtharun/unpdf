@@ -130,7 +130,10 @@ pub const UNPDF_FLAG_NO_ESCAPE: u32 = 32;
 ///
 /// Both markdown entry points take the same bitmask, and reading it in two places is how
 /// a flag comes to be honoured by one of them and ignored by the other.
-fn render_options_from_flags(flags: u32) -> RenderOptions {
+///
+/// `UNPDF_FLAG_REFINE` in a build without the `refine` feature is rejected rather than
+/// ignored: the caller asked for a pass this library cannot run.
+fn render_options_from_flags(flags: u32) -> Result<RenderOptions, FfiError> {
     let mut options = RenderOptions::new();
     if flags & UNPDF_FLAG_FRONTMATTER != 0 {
         options.include_frontmatter = true;
@@ -141,11 +144,32 @@ fn render_options_from_flags(flags: u32) -> RenderOptions {
     if flags & UNPDF_FLAG_PAGE_MARKERS != 0 {
         options.page_markers = PageMarkerStyle::Comment;
     }
-    #[cfg(feature = "refine")]
     if flags & UNPDF_FLAG_REFINE != 0 {
-        options = options.with_refine();
+        options = with_refine(options).map_err(invalid_argument)?;
     }
-    options
+    Ok(options)
+}
+
+/// Request the shape-refinement pass, or say why this build cannot run it.
+fn with_refine(options: RenderOptions) -> Result<RenderOptions, String> {
+    #[cfg(feature = "refine")]
+    {
+        Ok(options.with_refine())
+    }
+    #[cfg(not(feature = "refine"))]
+    {
+        let _ = options;
+        Err(missing_feature("refine", "refine"))
+    }
+}
+
+/// The message for a setting whose feature was compiled out. The schema of the options
+/// JSON does not change with the build: a field this build cannot honour is named as such,
+/// not reported as an unknown key — a misspelling and a missing capability are different
+/// mistakes.
+#[cfg(not(all(feature = "refine", feature = "ai")))]
+fn missing_feature(field: &str, feature: &str) -> String {
+    format!("{field} requires the `{feature}` feature, which this build of unpdf does not include")
 }
 
 /// Deserializable mirror of [`RenderOptions`] for `unpdf_to_markdown_with_options`.
@@ -181,8 +205,14 @@ fn render_options_from_flags(flags: u32) -> RenderOptions {
 ///
 /// `ai_refine`'s three credential fields are all required when the object is present —
 /// the same rule [`FfiParseOptions`] applies to its own `ai_*` fields.
+///
+/// A key outside this schema is rejected, so a misspelled option fails instead of
+/// quietly rendering with the default. The schema is the same in every build: `refine`
+/// and `ai_refine` are always known keys, and asking for one in a build without its
+/// feature fails with a message naming the feature (`"refine": false` and an absent
+/// `ai_refine` ask for nothing and are accepted everywhere).
 #[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct FfiRenderOptions {
     image_path_prefix: Option<String>,
     table_fallback: Option<FfiTableFallback>,
@@ -191,12 +221,10 @@ struct FfiRenderOptions {
     preserve_line_breaks: Option<bool>,
     escape_special_chars: Option<bool>,
     cleanup_preset: Option<FfiCleanupPreset>,
-    #[cfg(feature = "refine")]
     refine: Option<bool>,
     line_width: Option<u32>,
     page_markers: Option<FfiPageMarkerStyle>,
     pages: Option<FfiPageSelection>,
-    #[cfg(feature = "ai")]
     ai_refine: Option<FfiAiRefine>,
 }
 
@@ -223,9 +251,9 @@ enum FfiPageMarkerStyle {
     Comment,
 }
 
-#[cfg(feature = "ai")]
 #[derive(serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
 struct FfiAiRefine {
     base_url: String,
     api_key: String,
@@ -270,9 +298,8 @@ impl TryFrom<FfiRenderOptions> for RenderOptions {
                 FfiCleanupPreset::Aggressive => crate::CleanupPreset::Aggressive,
             });
         }
-        #[cfg(feature = "refine")]
         if ffi.refine == Some(true) {
-            options = options.with_refine();
+            options = with_refine(options)?;
         }
         if let Some(v) = ffi.line_width {
             options.line_width = v;
@@ -290,14 +317,21 @@ impl TryFrom<FfiRenderOptions> for RenderOptions {
                 FfiPageSelection::Pages(list) => PageSelection::Pages(list),
             };
         }
-        #[cfg(feature = "ai")]
         if let Some(ai) = ffi.ai_refine {
-            options =
-                options.with_ai_refine(crate::AiConfig::new(ai.base_url, ai.api_key, ai.model));
-            if let Some(instructions) = ai.instructions {
-                if let Some(opts) = options.ai_refine.as_mut() {
-                    opts.instructions = Some(instructions);
+            #[cfg(feature = "ai")]
+            {
+                options =
+                    options.with_ai_refine(crate::AiConfig::new(ai.base_url, ai.api_key, ai.model));
+                if let Some(instructions) = ai.instructions {
+                    if let Some(opts) = options.ai_refine.as_mut() {
+                        opts.instructions = Some(instructions);
+                    }
                 }
+            }
+            #[cfg(not(feature = "ai"))]
+            {
+                let _ = ai;
+                return Err(missing_feature("ai_refine", "ai"));
             }
         }
         Ok(options)
@@ -426,8 +460,12 @@ pub unsafe extern "C" fn unpdf_parse_bytes(data: *const u8, len: usize) -> *mut 
 /// rejected rather than silently ignored, so a typo cannot look like a model that
 /// found nothing to say. Supplying none of them leaves AI disabled, which is the
 /// default. `ai_image_scope` without them is likewise rejected.
+///
+/// A key outside this schema is rejected, so a misspelled option fails instead of
+/// quietly parsing with the default. The `ai_*` keys are known in every build; in a build
+/// without the `ai` feature, supplying any of them fails with a message naming the feature.
 #[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct FfiParseOptions {
     error_mode: Option<FfiErrorMode>,
     extract_text: Option<bool>,
@@ -437,19 +475,15 @@ struct FfiParseOptions {
     pages: Option<FfiPageSelection>,
     password: Option<String>,
     suppress_low_confidence_ocr: Option<bool>,
-    #[cfg(feature = "ai")]
     ai_base_url: Option<String>,
-    #[cfg(feature = "ai")]
     ai_api_key: Option<String>,
-    #[cfg(feature = "ai")]
     ai_model: Option<String>,
-    #[cfg(feature = "ai")]
     ai_image_scope: Option<FfiImageScope>,
 }
 
-#[cfg(feature = "ai")]
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(not(feature = "ai"), allow(dead_code))]
 enum FfiImageScope {
     All,
     LowConfidencePagesOnly,
@@ -548,6 +582,20 @@ impl TryFrom<FfiParseOptions> for ParseOptions {
                         missing.join(", ")
                     ));
                 }
+            }
+        }
+        #[cfg(not(feature = "ai"))]
+        {
+            let supplied = [
+                ("ai_base_url", ffi.ai_base_url.is_some()),
+                ("ai_api_key", ffi.ai_api_key.is_some()),
+                ("ai_model", ffi.ai_model.is_some()),
+                ("ai_image_scope", ffi.ai_image_scope.is_some()),
+            ]
+            .into_iter()
+            .find_map(|(field, present)| present.then_some(field));
+            if let Some(field) = supplied {
+                return Err(missing_feature(field, "ai"));
             }
         }
 
@@ -659,7 +707,7 @@ unparser_shared::export_string_getter!(
     unpdf_to_markdown(doc: UnpdfDocument, flags: u32),
     {
         let document = &(*doc).inner;
-        let options = render_options_from_flags(flags);
+        let options = render_options_from_flags(flags)?;
         crate::render::to_markdown(document, &options).map_err(ffi_err)
     }
 );
@@ -1199,7 +1247,7 @@ unparser_shared::export_string_getter!(
             )
         })?;
 
-        let options = render_options_from_flags(flags);
+        let options = render_options_from_flags(flags)?;
 
         // Create a single-page document for rendering
         let mut single_page_doc = Document::new();

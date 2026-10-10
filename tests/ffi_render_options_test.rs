@@ -14,9 +14,9 @@ use std::os::raw::c_char;
 
 use common::{mixed_pdf, text_pdf};
 use unpdf::ffi::{
-    unpdf_free_document, unpdf_free_string, unpdf_last_error_kind, unpdf_parse_bytes,
-    unpdf_to_markdown, unpdf_to_markdown_with_options, UNPDF_ERROR_INVALID_ARGUMENT,
-    UNPDF_FLAG_FRONTMATTER,
+    unpdf_free_document, unpdf_free_string, unpdf_last_error, unpdf_last_error_kind,
+    unpdf_parse_bytes, unpdf_to_markdown, unpdf_to_markdown_with_options,
+    UNPDF_ERROR_INVALID_ARGUMENT, UNPDF_FLAG_FRONTMATTER,
 };
 
 unsafe fn take_string(ptr: *mut c_char) -> String {
@@ -210,5 +210,76 @@ fn ai_refine_falls_back_to_the_un_refined_markdown_when_the_endpoint_is_unreacha
             plain, with_ai,
             "a failed AI refine must leave the markdown unchanged"
         );
+    }
+}
+
+/// Asserts that `json` is refused with the invalid-argument kind and returns the message.
+unsafe fn rejection(json: &str) -> String {
+    let bytes = text_pdf();
+    let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+    assert!(!doc.is_null());
+    let options = cstr(json);
+    let out = unpdf_to_markdown_with_options(doc, options.as_ptr());
+    assert!(out.is_null(), "accepted {json}");
+    assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_ARGUMENT);
+    let message = CStr::from_ptr(unpdf_last_error())
+        .to_str()
+        .unwrap()
+        .to_owned();
+    unpdf_free_document(doc);
+    message
+}
+
+/// A misspelled key is a mistake the caller can fix only if it is reported: accepted, it
+/// renders with the default and looks like the option had no effect.
+#[test]
+fn an_unknown_key_is_rejected() {
+    unsafe {
+        let message = rejection(r#"{"include_frontmater":true}"#);
+        assert!(message.contains("include_frontmater"), "{message}");
+    }
+}
+
+/// `"refine": false` asks for nothing, so it is accepted in every build.
+#[test]
+fn refine_false_is_accepted_in_every_build() {
+    let bytes = text_pdf();
+    unsafe {
+        assert_eq!(
+            render(&bytes, Some(r#"{"refine":false}"#)),
+            render(&bytes, None)
+        );
+    }
+}
+
+#[cfg(feature = "ai")]
+#[test]
+fn an_unknown_key_inside_ai_refine_is_rejected() {
+    unsafe {
+        let message = rejection(
+            r#"{"ai_refine":{"base_url":"http://localhost","api_key":"k","model":"m","instruction":"x"}}"#,
+        );
+        assert!(message.contains("instruction"), "{message}");
+    }
+}
+
+/// In a build without the feature, the key is still known: the error names the feature
+/// rather than calling the key unknown.
+#[cfg(not(feature = "refine"))]
+#[test]
+fn refine_without_the_feature_names_the_feature() {
+    unsafe {
+        let message = rejection(r#"{"refine":true}"#);
+        assert!(message.contains("`refine` feature"), "{message}");
+    }
+}
+
+#[cfg(not(feature = "ai"))]
+#[test]
+fn ai_refine_without_the_feature_names_the_feature() {
+    unsafe {
+        let message =
+            rejection(r#"{"ai_refine":{"base_url":"http://localhost","api_key":"k","model":"m"}}"#);
+        assert!(message.contains("`ai` feature"), "{message}");
     }
 }

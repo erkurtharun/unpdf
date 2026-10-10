@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 use common::lab_image_pdf;
 use unpdf::ffi::{
@@ -256,5 +256,40 @@ fn options_without_ai_fields_still_parse() {
         assert!(!doc.is_null());
         assert_eq!(unpdf_resource_count(doc), 1);
         unpdf_free_document(doc);
+    }
+}
+
+/// Asserts that `json` is refused with the invalid-argument kind and returns the message.
+unsafe fn rejection(json: &str) -> String {
+    let bytes = jpeg_pdf(100, 100);
+    let options = cstr(json);
+    let doc = unpdf_parse_bytes_with_options(bytes.as_ptr(), bytes.len(), options.as_ptr());
+    assert!(doc.is_null(), "accepted {json}");
+    assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_ARGUMENT);
+    CStr::from_ptr(unpdf_last_error())
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A misspelled key fails instead of parsing with the default — `extract_resource`
+/// would otherwise leave the inventory empty with no sign of why.
+#[test]
+fn an_unknown_key_is_rejected() {
+    unsafe {
+        let message = rejection(r#"{"extract_resource":true}"#);
+        assert!(message.contains("extract_resource"), "{message}");
+    }
+}
+
+/// In a build without the `ai` feature the `ai_*` keys are still known: the error names
+/// the feature rather than calling the key unknown.
+#[cfg(not(feature = "ai"))]
+#[test]
+fn ai_fields_without_the_feature_name_the_feature() {
+    unsafe {
+        let message = rejection(r#"{"ai_model":"m"}"#);
+        assert!(message.contains("ai_model"), "{message}");
+        assert!(message.contains("`ai` feature"), "{message}");
     }
 }

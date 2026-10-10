@@ -133,6 +133,9 @@ def _native_error(lib: ctypes.CDLL) -> "UnpdfError":
 #: :func:`get_resource_data` read from), ``min_image_dimension`` (int, default 64 —
 #: images below this on either axis are dropped as decorative; 0 keeps every image),
 #: ``parallel`` (bool), ``password`` (str), ``suppress_low_confidence_ocr`` (bool).
+#: A key outside this list raises :class:`UnpdfError` with
+#: ``kind == ErrorKind.INVALID_ARGUMENT`` — a misspelled option fails rather than
+#: quietly keeping the default.
 ParseOptions = "dict[str, Any]"
 
 

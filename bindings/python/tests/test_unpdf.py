@@ -281,6 +281,14 @@ class TestParseOptions:
         with pytest.raises(TypeError):
             unpdf.get_info(_jpeg_pdf(10, 10), options={"extract_resources": object()})
 
+    def test_misspelled_option_raises_invalid_argument(self):
+        # A misspelled key would otherwise parse with the default and leave the
+        # resource inventory empty with no sign of why.
+        with pytest.raises(unpdf.UnpdfError) as raised:
+            unpdf.get_info(_jpeg_pdf(10, 10), options={"extract_resource": True})
+        assert raised.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+        assert "extract_resource" in str(raised.value)
+
     def test_options_reaches_file_path_entry_point_too(self, tmp_path):
         path = tmp_path / "jpeg.pdf"
         path.write_bytes(_jpeg_pdf(100, 100))

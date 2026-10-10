@@ -35,7 +35,9 @@ typedef struct UnpdfDocument UnpdfDocument;
 /* Bit 4 is retired: it named a paragraph-spacing option that never reached the
    renderer. Retired bits are not reused; passing it yields the default rendering. */
 #define UNPDF_FLAG_PAGE_MARKERS      8u
-#define UNPDF_FLAG_REFINE           16u  /* Apply the shape-refinement pass */
+#define UNPDF_FLAG_REFINE           16u  /* Apply the shape-refinement pass; fails with
+                                             UNPDF_ERROR_INVALID_ARGUMENT in a build
+                                             without the `refine` feature */
 #define UNPDF_FLAG_NO_ESCAPE        32u  /* Do not escape special Markdown characters */
 
 /* Format selector for unpdf_to_json. */
@@ -133,7 +135,9 @@ UnpdfDocument* unpdf_parse_bytes(const uint8_t* data, size_t len);
  *     "ai_base_url": string, "ai_api_key": string, "ai_model": string,
  *     "ai_image_scope": "all" | "low_confidence_pages_only" }
  *
- * The three ai_* credential fields go together.
+ * The three ai_* credential fields go together. A field outside this schema fails with
+ * UNPDF_ERROR_INVALID_ARGUMENT, as does an ai_* field in a build without the `ai`
+ * feature -- the message names the field.
  *
  * @param path UTF-8, null-terminated path.
  * @param options_json UTF-8, null-terminated JSON, or NULL.
@@ -179,6 +183,10 @@ char* unpdf_to_markdown(const UnpdfDocument* doc, uint32_t flags);
  *     "pages": "all" | { "range": { "from": n, "to": n } } | { "pages": [n, ...] },
  *     "ai_refine": { "base_url": string, "api_key": string, "model": string,
  *                    "instructions": string } }
+ *
+ * A field outside this schema fails with UNPDF_ERROR_INVALID_ARGUMENT. So does asking for
+ * a pass this build does not include: "refine": true without the `refine` feature,
+ * "ai_refine" without the `ai` feature.
  *
  * @param options_json UTF-8, null-terminated JSON, or NULL.
  * @return Markdown string (must be freed with unpdf_free_string), or NULL on error --

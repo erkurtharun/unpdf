@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking: an option the library does not know is an error.** The options JSON of
+  `unpdf_parse_*_with_options` and `unpdf_to_markdown_with_options` ignored keys outside its
+  schema, so a misspelled option (`extract_resource`) quietly kept its default. Such a key now
+  fails with `UNPDF_ERROR_INVALID_ARGUMENT` and a message naming it — Python raises
+  `UnpdfError` with `ErrorKind.INVALID_ARGUMENT`. The schema no longer depends on the build:
+  in a build without the `refine` or `ai` feature, `"refine": true`, `ai_refine` and the
+  `ai_*` parse fields fail with a message naming the missing feature instead of being
+  ignored, and so does `UNPDF_FLAG_REFINE`. Published builds include both features.
+
 ### Fixed
 
 - **A column of figures set flush right is a column.** In a table without rules, columns were
