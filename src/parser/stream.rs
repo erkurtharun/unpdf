@@ -296,6 +296,8 @@ where
     }
 
     // 2. 대상 page_num 수집 (PageSelection 필터)
+    let numbers: Vec<u32> = page_map.keys().copied().collect();
+    opts.pages.check(&numbers)?;
     let mut targets: Vec<u32> = page_map
         .keys()
         .copied()

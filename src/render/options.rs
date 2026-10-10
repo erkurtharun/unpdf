@@ -285,6 +285,39 @@ impl PageSelection {
         }
     }
 
+    /// Check that the selection names pages there are, given the numbers of the pages
+    /// there are.
+    ///
+    /// A listed page that is not among them, or a range none of them fall in, is
+    /// [`Error::PageOutOfRange`](crate::Error::PageOutOfRange); a range that ends before it
+    /// starts is [`Error::InvalidPageRange`](crate::Error::InvalidPageRange). A selection
+    /// that selects nothing is never what was asked, and honoured quietly it reads as an
+    /// empty document.
+    pub fn check(&self, numbers: &[u32]) -> crate::Result<()> {
+        let count = numbers.len() as u32;
+        match self {
+            PageSelection::All => Ok(()),
+            PageSelection::Pages(pages) => match pages.iter().find(|n| !numbers.contains(n)) {
+                Some(&missing) => Err(crate::Error::PageOutOfRange(missing, count)),
+                None => Ok(()),
+            },
+            PageSelection::Range(range) if range.start() > range.end() => {
+                Err(crate::Error::InvalidPageRange(format!(
+                    "{}-{} ends before it starts",
+                    range.start(),
+                    range.end()
+                )))
+            }
+            PageSelection::Range(range) => {
+                if numbers.iter().any(|n| range.contains(n)) {
+                    Ok(())
+                } else {
+                    Err(crate::Error::PageOutOfRange(*range.start(), count))
+                }
+            }
+        }
+    }
+
     /// Parse a page selection string (e.g., "1-10", "1,3,5,7-10").
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim();
@@ -341,6 +374,29 @@ mod tests {
         assert!(options.include_frontmatter);
         assert_eq!(options.max_heading_level, 3);
         assert_eq!(options.table_fallback, TableFallback::Html);
+    }
+
+    #[test]
+    fn page_selection_check_names_what_is_missing() {
+        use crate::Error;
+        let held = [3, 4];
+        assert!(PageSelection::All.check(&held).is_ok());
+        assert!(PageSelection::Pages(vec![3, 4]).check(&held).is_ok());
+        assert!(PageSelection::Range(1..=3).check(&held).is_ok());
+        assert!(matches!(
+            PageSelection::Pages(vec![3, 9]).check(&held),
+            Err(Error::PageOutOfRange(9, 2))
+        ));
+        assert!(matches!(
+            PageSelection::Range(5..=8).check(&held),
+            Err(Error::PageOutOfRange(5, 2))
+        ));
+        #[allow(clippy::reversed_empty_ranges)]
+        let backwards = PageSelection::Range(4..=3);
+        assert!(matches!(
+            backwards.check(&held),
+            Err(Error::InvalidPageRange(_))
+        ));
     }
 
     #[test]

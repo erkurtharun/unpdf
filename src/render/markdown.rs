@@ -40,12 +40,14 @@ impl MarkdownRenderer {
 
     /// Render a document to Markdown.
     pub fn render(mut self, doc: &Document) -> Result<String> {
+        self.check_page_selection(doc)?;
         let result = self.render_internal(doc)?;
         Ok(result)
     }
 
     /// Render a document to Markdown with extraction statistics.
     pub fn render_with_stats(mut self, doc: &Document) -> Result<RenderResult> {
+        self.check_page_selection(doc)?;
         self.options.collect_stats = true;
         let content = self.render_internal(doc)?;
 
@@ -53,6 +55,12 @@ impl MarkdownRenderer {
         self.stats.count_text(&content);
 
         Ok(RenderResult::new(content, doc.metadata.clone(), self.stats))
+    }
+
+    /// The page selection must name pages of this document — see [`PageSelection::check`](super::PageSelection::check).
+    fn check_page_selection(&self, doc: &Document) -> Result<()> {
+        let numbers: Vec<u32> = doc.pages.iter().map(|page| page.number).collect();
+        self.options.page_selection.check(&numbers)
     }
 
     fn render_internal(&mut self, doc: &Document) -> Result<String> {

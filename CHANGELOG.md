@@ -33,17 +33,22 @@
   in a build without the `refine` or `ai` feature, `"refine": true`, `ai_refine` and the
   `ai_*` parse fields fail with a message naming the missing feature instead of being
   ignored, and so does `UNPDF_FLAG_REFINE`. Published builds include both features.
+- **Breaking: a flag bit the library does not define is an error.** `unpdf_to_markdown` and
+  `unpdf_page_to_markdown` ignored bits outside `UNPDF_FLAG_*`; they now fail with
+  `UNPDF_ERROR_INVALID_ARGUMENT`. The retired bit 4 is still accepted and does nothing.
 
 ### Fixed
 
 - **`Document::get_page(n)` finds page `n`.** It returned the `n`-th page held, so in a document
   parsed with a page selection, or leniently past a page that failed, it returned another page
   or none — and `unpdf_page_to_markdown` rendered or refused the wrong page with it.
-- **A page selection naming pages the document does not have fails.** The `pages` render option
-  rendered nothing for a page outside the document, and nothing said so. A listed page the
-  document does not have, or a range none of its pages fall in, now fails with
-  `UNPDF_ERROR_PAGE_OUT_OF_RANGE`, and a range that ends before it starts with
-  `UNPDF_ERROR_INVALID_PAGE_RANGE`.
+- **A page selection naming pages the document does not have fails.** Parsing with
+  `ParseOptions::pages` and rendering with `RenderOptions::page_selection` produced an empty
+  document or an empty render for a page outside the document, and nothing said so. A listed
+  page the document does not have, or a range none of its pages fall in, is now
+  `Error::PageOutOfRange` (`UNPDF_ERROR_PAGE_OUT_OF_RANGE`), and a range that ends before it
+  starts `Error::InvalidPageRange` (`UNPDF_ERROR_INVALID_PAGE_RANGE`) — in the Rust API, the
+  C ABI's `pages` options and the bindings alike. `PageSelection::check` is the rule.
 - **A column of figures set flush right is a column.** In a table without rules, columns were
   found where text starts on many rows; figures set flush right start wherever their width puts
   them (`2454` left of `958`), so their column was missed and the figures were run together

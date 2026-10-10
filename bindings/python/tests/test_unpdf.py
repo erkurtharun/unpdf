@@ -289,6 +289,12 @@ class TestParseOptions:
         assert raised.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
         assert "extract_resource" in str(raised.value)
 
+    def test_a_page_the_document_does_not_have_raises_page_out_of_range(self):
+        # Parsed quietly, the selection would read as a document with no text.
+        with pytest.raises(unpdf.UnpdfError) as raised:
+            unpdf.get_info(_jpeg_pdf(10, 10), options={"pages": {"pages": [5]}})
+        assert raised.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
+
     def test_options_reaches_file_path_entry_point_too(self, tmp_path):
         path = tmp_path / "jpeg.pdf"
         path.write_bytes(_jpeg_pdf(100, 100))

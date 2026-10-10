@@ -143,3 +143,23 @@ fn the_refine_flag_without_the_feature_is_rejected() {
         unpdf_free_document(doc);
     }
 }
+
+/// A bit the library does not define is refused by both markdown entry points: a caller
+/// built against a newer header asked for something this library cannot do, and an
+/// ignored bit renders as if it had. The retired bit stays defined (as doing nothing).
+#[test]
+fn an_undefined_flag_bit_is_rejected() {
+    use unpdf::ffi::{unpdf_last_error_kind, UNPDF_ERROR_INVALID_ARGUMENT};
+    let bytes = text_pdf();
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!doc.is_null());
+        for bit in [64, 1 << 31] {
+            assert!(unpdf_to_markdown(doc, UNPDF_FLAG_FRONTMATTER | bit).is_null());
+            assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_ARGUMENT);
+            assert!(unpdf_page_to_markdown(doc, 1, bit).is_null());
+            assert_eq!(unpdf_last_error_kind(), UNPDF_ERROR_INVALID_ARGUMENT);
+        }
+        unpdf_free_document(doc);
+    }
+}

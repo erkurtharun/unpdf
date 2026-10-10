@@ -131,9 +131,23 @@ pub const UNPDF_FLAG_NO_ESCAPE: u32 = 32;
 /// Both markdown entry points take the same bitmask, and reading it in two places is how
 /// a flag comes to be honoured by one of them and ignored by the other.
 ///
-/// `UNPDF_FLAG_REFINE` in a build without the `refine` feature is rejected rather than
-/// ignored: the caller asked for a pass this library cannot run.
+/// A bit this library does not define, and `UNPDF_FLAG_REFINE` in a build without the
+/// `refine` feature, are rejected rather than ignored: the caller asked for something this
+/// library cannot do. The retired bit 4 is defined — as doing nothing.
 fn render_options_from_flags(flags: u32) -> Result<RenderOptions, FfiError> {
+    const RETIRED: u32 = 4;
+    const DEFINED: u32 = UNPDF_FLAG_FRONTMATTER
+        | UNPDF_FLAG_ESCAPE_SPECIAL
+        | RETIRED
+        | UNPDF_FLAG_PAGE_MARKERS
+        | UNPDF_FLAG_REFINE
+        | UNPDF_FLAG_NO_ESCAPE;
+    if flags & !DEFINED != 0 {
+        return Err(invalid_argument(format!(
+            "unknown flag bits {:#x} (this library defines {DEFINED:#x})",
+            flags & !DEFINED
+        )));
+    }
     let mut options = RenderOptions::new();
     if flags & UNPDF_FLAG_FRONTMATTER != 0 {
         options.include_frontmatter = true;
@@ -755,58 +769,9 @@ unparser_shared::export_string_getter!(
     {
         let document = &(*doc).inner;
         let options = render_options_from_json(options_json)?;
-        check_page_selection(document, &options.page_selection)?;
         crate::render::to_markdown(document, &options).map_err(ffi_err)
     }
 );
-
-/// Refuse a page selection the document cannot honour, the way `unpdf_page_to_markdown`
-/// refuses a page it does not have: a listed page that is not in the document, a range
-/// none of its pages fall in, or a range that ends before it starts. Rendering it would
-/// produce an empty or partial result that looks like a successful render of what was
-/// asked.
-fn check_page_selection(document: &Document, selection: &PageSelection) -> Result<(), FfiError> {
-    let out_of_range = |what: String| {
-        (
-            ErrorKind::PageOutOfRange as c_int,
-            format!(
-                "{what} is not in the document ({} pages)",
-                document.page_count()
-            ),
-        )
-    };
-    match selection {
-        PageSelection::All => Ok(()),
-        // By page number, as the renderer selects: a document parsed with a page selection
-        // holds only those pages, so a position is not a number.
-        PageSelection::Pages(list) => match list
-            .iter()
-            .find(|&&n| !document.pages.iter().any(|p| p.number == n))
-        {
-            Some(n) => Err(out_of_range(format!("page {n}"))),
-            None => Ok(()),
-        },
-        PageSelection::Range(range) if range.start() > range.end() => Err((
-            ErrorKind::InvalidPageRange as c_int,
-            format!(
-                "page range from {} to {} ends before it starts",
-                range.start(),
-                range.end()
-            ),
-        )),
-        PageSelection::Range(range) => {
-            if document.pages.iter().any(|p| range.contains(&p.number)) {
-                Ok(())
-            } else {
-                Err(out_of_range(format!(
-                    "no page from {} to {}",
-                    range.start(),
-                    range.end()
-                )))
-            }
-        }
-    }
-}
 
 unparser_shared::export_string_getter!(
     /// Convert a document to plain text.
@@ -1413,36 +1378,6 @@ mod tests {
             let err = render_options(bad).unwrap_err();
             assert!(err.contains("one character"), "{err}");
         }
-    }
-
-    #[test]
-    fn a_page_selection_must_name_pages_of_the_document() {
-        let mut doc = Document::new();
-        doc.add_page(crate::model::Page::new(3, 612.0, 792.0));
-        doc.add_page(crate::model::Page::new(4, 612.0, 792.0));
-        let check = |selection| check_page_selection(&doc, &selection);
-        assert!(check(PageSelection::All).is_ok());
-        assert!(check(PageSelection::Pages(vec![3, 4])).is_ok());
-        assert!(
-            check(PageSelection::Range(1..=3)).is_ok(),
-            "the range holds page 3"
-        );
-
-        let (kind, message) = check(PageSelection::Pages(vec![3, 9])).unwrap_err();
-        assert_eq!(kind, ErrorKind::PageOutOfRange as c_int);
-        assert!(message.contains("page 9"), "{message}");
-        let (kind, _) = check(PageSelection::Pages(vec![1])).unwrap_err();
-        assert_eq!(
-            kind,
-            ErrorKind::PageOutOfRange as c_int,
-            "page 1 is not held"
-        );
-        let (kind, _) = check(PageSelection::Range(5..=8)).unwrap_err();
-        assert_eq!(kind, ErrorKind::PageOutOfRange as c_int);
-        #[allow(clippy::reversed_empty_ranges)]
-        let (kind, message) = check(PageSelection::Range(4..=3)).unwrap_err();
-        assert_eq!(kind, ErrorKind::InvalidPageRange as c_int);
-        assert!(message.contains("from 4 to 3"), "{message}");
     }
 
     #[test]

@@ -29,7 +29,8 @@ extern "C" {
 /** Opaque handle to a parsed document. */
 typedef struct UnpdfDocument UnpdfDocument;
 
-/* Flags for unpdf_to_markdown / unpdf_page_to_markdown. */
+/* Flags for unpdf_to_markdown / unpdf_page_to_markdown. A bit not defined here fails
+   with UNPDF_ERROR_INVALID_ARGUMENT. */
 #define UNPDF_FLAG_FRONTMATTER       1u
 #define UNPDF_FLAG_ESCAPE_SPECIAL    2u  /* Accepted, no effect: escaping is the default (see NO_ESCAPE) */
 /* Bit 4 is retired: it named a paragraph-spacing option that never reached the

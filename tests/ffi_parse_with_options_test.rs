@@ -293,3 +293,34 @@ fn ai_fields_without_the_feature_name_the_feature() {
         assert!(message.contains("`ai` feature"), "{message}");
     }
 }
+
+/// A page selection naming a page the document does not have is refused at parse time,
+/// rather than parsing an empty document that reads as "no text here".
+#[test]
+fn a_page_the_document_does_not_have_is_page_out_of_range() {
+    for json in [
+        r#"{"pages":{"pages":[5]}}"#,
+        r#"{"pages":{"range":{"from":4,"to":9}}}"#,
+    ] {
+        let bytes = jpeg_pdf(100, 100);
+        let options = cstr(json);
+        unsafe {
+            let doc = unpdf_parse_bytes_with_options(bytes.as_ptr(), bytes.len(), options.as_ptr());
+            assert!(doc.is_null(), "parsed {json} of a one-page document");
+            assert_eq!(
+                unpdf_last_error_kind(),
+                unpdf::ErrorKind::PageOutOfRange as i32
+            );
+        }
+    }
+    let bytes = jpeg_pdf(100, 100);
+    let options = cstr(r#"{"pages":{"range":{"from":3,"to":1}}}"#);
+    unsafe {
+        let doc = unpdf_parse_bytes_with_options(bytes.as_ptr(), bytes.len(), options.as_ptr());
+        assert!(doc.is_null());
+        assert_eq!(
+            unpdf_last_error_kind(),
+            unpdf::ErrorKind::InvalidPageRange as i32
+        );
+    }
+}
