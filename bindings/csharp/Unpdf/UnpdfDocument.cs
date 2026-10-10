@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -6,8 +8,46 @@ using System.Text.Json;
 namespace Unpdf;
 
 /// <summary>
-/// Options for markdown rendering.
+/// How a table Markdown cannot express (merged cells) is written.
 /// </summary>
+public enum TableFallback
+{
+    /// <summary>A Markdown table (the default).</summary>
+    Markdown,
+
+    /// <summary>An HTML table that keeps rowspan and colspan.</summary>
+    Html,
+
+    /// <summary>A table drawn in ASCII characters.</summary>
+    Ascii,
+}
+
+/// <summary>
+/// The configurations of the cleanup pipeline run over the rendered Markdown.
+/// </summary>
+public enum CleanupPreset
+{
+    /// <summary>Unicode normalization only.</summary>
+    Minimal,
+
+    /// <summary>Every stage (the default).</summary>
+    Standard,
+
+    /// <summary>Every stage, removing headers and footers more eagerly.</summary>
+    Aggressive,
+}
+
+/// <summary>
+/// Options for markdown rendering. Every property reaches the native library, and the
+/// defaults are the library's own.
+/// </summary>
+/// <remarks>
+/// A value the library cannot honour — a <see cref="MaxHeadingLevel"/> outside 1-6, a
+/// <see cref="ListMarker"/> that is not one character — throws
+/// <see cref="UnpdfException"/> with <see cref="UnpdfErrorKind.InvalidArgument"/>; a page in
+/// <see cref="Pages"/> the document does not have throws it with
+/// <see cref="UnpdfErrorKind.PageOutOfRange"/>.
+/// </remarks>
 public class MarkdownOptions
 {
     /// <summary>
@@ -33,14 +73,83 @@ public class MarkdownOptions
     /// </summary>
     public bool Refine { get; set; } = false;
 
-    internal int ToFlags()
+    /// <summary>
+    /// Prefix of the image paths written in the Markdown. Default: empty.
+    /// </summary>
+    public string ImagePathPrefix { get; set; } = "";
+
+    /// <summary>
+    /// How a table Markdown cannot express is written. Default: <see cref="Unpdf.TableFallback.Markdown"/>.
+    /// </summary>
+    public TableFallback TableFallback { get; set; } = TableFallback.Markdown;
+
+    /// <summary>
+    /// The deepest heading level written (1-6); deeper headings take this level. Default: 6.
+    /// </summary>
+    public int MaxHeadingLevel { get; set; } = 6;
+
+    /// <summary>
+    /// Keep line breaks inside paragraphs. Default: <see langword="false"/> (lines are joined).
+    /// </summary>
+    public bool PreserveLineBreaks { get; set; } = false;
+
+    /// <summary>
+    /// The character that marks an unordered list item. Default: <c>'-'</c>.
+    /// </summary>
+    public char ListMarker { get; set; } = '-';
+
+    /// <summary>
+    /// The cleanup run over the output, or <see langword="null"/> for none.
+    /// Default: <see cref="CleanupPreset.Standard"/>.
+    /// </summary>
+    public CleanupPreset? Cleanup { get; set; } = CleanupPreset.Standard;
+
+    /// <summary>
+    /// Wrap lines longer than this many characters; 0 (the default) does not wrap.
+    /// </summary>
+    public uint LineWidth { get; set; } = 0;
+
+    /// <summary>
+    /// The pages rendered (1-indexed), or <see langword="null"/> (the default) for every page.
+    /// </summary>
+    public IReadOnlyList<int>? Pages { get; set; }
+
+    /// <summary>
+    /// The options as <c>unpdf_to_markdown_with_options</c> reads them — every property.
+    /// <paramref name="pages"/>, when given, replaces <see cref="Pages"/>.
+    /// </summary>
+    internal string ToJson(IReadOnlyList<int>? pages = null)
     {
-        int flags = 0;
-        if (IncludeFrontmatter) flags |= NativeMethods.UNPDF_FLAG_FRONTMATTER;
-        if (!EscapeSpecialChars) flags |= NativeMethods.UNPDF_FLAG_NO_ESCAPE;
-        if (PageMarkers) flags |= NativeMethods.UNPDF_FLAG_PAGE_MARKERS;
-        if (Refine) flags |= NativeMethods.UNPDF_FLAG_REFINE;
-        return flags;
+        var selected = pages ?? Pages;
+        var payload = new MarkdownOptionsPayload
+        {
+            ImagePathPrefix = ImagePathPrefix,
+            TableFallback = TableFallback switch
+            {
+                TableFallback.Markdown => "markdown",
+                TableFallback.Html => "html",
+                TableFallback.Ascii => "ascii",
+                _ => throw new ArgumentOutOfRangeException(nameof(TableFallback)),
+            },
+            MaxHeadingLevel = MaxHeadingLevel,
+            IncludeFrontmatter = IncludeFrontmatter,
+            PreserveLineBreaks = PreserveLineBreaks,
+            ListMarker = ListMarker.ToString(),
+            EscapeSpecialChars = EscapeSpecialChars,
+            CleanupPreset = Cleanup switch
+            {
+                null => "none",
+                CleanupPreset.Minimal => "minimal",
+                CleanupPreset.Standard => "standard",
+                CleanupPreset.Aggressive => "aggressive",
+                _ => throw new ArgumentOutOfRangeException(nameof(Cleanup)),
+            },
+            Refine = Refine,
+            LineWidth = LineWidth,
+            PageMarkers = PageMarkers ? "comment" : "none",
+            Pages = selected is null ? null : new PageListPayload { Pages = selected.ToArray() },
+        };
+        return JsonSerializer.Serialize(payload, UnpdfJsonContext.Default.MarkdownOptionsPayload);
     }
 }
 
@@ -202,8 +311,8 @@ public class UnpdfDocument : IDisposable
     public string ToMarkdown(MarkdownOptions? options = null)
     {
         ThrowIfDisposed();
-        int flags = options?.ToFlags() ?? 0;
-        var ptr = NativeMethods.unpdf_to_markdown(_handle, flags);
+        var ptr = NativeMethods.unpdf_to_markdown_with_options(
+            _handle, (options ?? new MarkdownOptions()).ToJson());
         if (ptr == IntPtr.Zero)
             throw Failure("Failed to convert to markdown");
 
@@ -378,8 +487,8 @@ public class UnpdfDocument : IDisposable
     public string PageToMarkdown(int pageNumber, MarkdownOptions? options = null)
     {
         ThrowIfDisposed();
-        int flags = options?.ToFlags() ?? 0;
-        var ptr = NativeMethods.unpdf_page_to_markdown(_handle, pageNumber, flags);
+        var ptr = NativeMethods.unpdf_to_markdown_with_options(
+            _handle, (options ?? new MarkdownOptions()).ToJson(new[] { pageNumber }));
         if (ptr == IntPtr.Zero)
             throw Failure($"Failed to convert page {pageNumber} to markdown");
 

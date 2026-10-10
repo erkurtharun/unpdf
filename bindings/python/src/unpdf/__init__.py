@@ -3,14 +3,10 @@ unpdf - Python bindings for unpdf PDF extraction library.
 """
 
 from .unpdf import (
-    UNPDF_FLAG_ESCAPE_SPECIAL,
-    UNPDF_FLAG_FRONTMATTER,
-    UNPDF_FLAG_NO_ESCAPE,
-    UNPDF_FLAG_PAGE_MARKERS,
-    UNPDF_FLAG_REFINE,
     Document,
     ErrorKind,
     ParseOptions,
+    RenderOptions,
     RenderedPage,
     PdfSource,
     UnpdfError,
@@ -31,14 +27,10 @@ from .unpdf import (
 )
 
 __all__ = [
-    "UNPDF_FLAG_ESCAPE_SPECIAL",
-    "UNPDF_FLAG_FRONTMATTER",
-    "UNPDF_FLAG_NO_ESCAPE",
-    "UNPDF_FLAG_PAGE_MARKERS",
-    "UNPDF_FLAG_REFINE",
     "Document",
     "ErrorKind",
     "ParseOptions",
+    "RenderOptions",
     "RenderedPage",
     "PdfSource",
     "UnpdfError",

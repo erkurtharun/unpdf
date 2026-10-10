@@ -1010,8 +1010,8 @@ Console.WriteLine($"Title: {doc.Title}, Pages: {doc.SectionCount}");
 string withFrontmatter = doc.ToMarkdown(new MarkdownOptions
 {
     IncludeFrontmatter = true,
-    EscapeSpecialChars = true,
     PageMarkers = true,
+    TableFallback = TableFallback.Html,
 });
 
 // A single page (1-indexed)

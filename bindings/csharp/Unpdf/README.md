@@ -47,10 +47,21 @@ using var doc = UnpdfDocument.ParseFile("document.pdf");
 var markdown = doc.ToMarkdown(new MarkdownOptions
 {
     IncludeFrontmatter = true,
-    EscapeSpecialChars = true,
     PageMarkers = true,
+    TableFallback = TableFallback.Html,
+    MaxHeadingLevel = 3,
+    Cleanup = null,          // no cleanup; the default is CleanupPreset.Standard
+    Pages = new[] { 1, 2 },  // null (the default) renders every page
 });
 ```
+
+Every `MarkdownOptions` property reaches the native library and defaults to the library's own
+value: `IncludeFrontmatter`, `EscapeSpecialChars` (on), `PageMarkers`, `Refine`,
+`ImagePathPrefix`, `TableFallback` (`Markdown` · `Html` · `Ascii`), `MaxHeadingLevel` (1-6,
+default 6), `PreserveLineBreaks`, `ListMarker` (default `'-'`), `Cleanup` (a `CleanupPreset`, or
+`null` for none), `LineWidth` (0 = no wrapping) and `Pages`. A value the library cannot honour
+throws `UnpdfException` with `UnpdfErrorKind.InvalidArgument`; a page the document does not have,
+with `UnpdfErrorKind.PageOutOfRange`.
 
 ### Per-page extraction
 

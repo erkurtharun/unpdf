@@ -11,11 +11,6 @@ from typing import Any, Union
 
 from ._native import (
     get_library,
-    UNPDF_FLAG_ESCAPE_SPECIAL,
-    UNPDF_FLAG_FRONTMATTER,
-    UNPDF_FLAG_NO_ESCAPE,
-    UNPDF_FLAG_PAGE_MARKERS,
-    UNPDF_FLAG_REFINE,
     UNPDF_JSON_COMPACT,
     UNPDF_JSON_PRETTY,
 )
@@ -138,6 +133,22 @@ def _native_error(lib: ctypes.CDLL) -> "UnpdfError":
 #: quietly keeping the default.
 ParseOptions = "dict[str, Any]"
 
+#: Rendering options accepted by :func:`to_markdown`, passed straight through to the
+#: native library as JSON. Every key is optional; an absent key keeps unpdf's own
+#: default. Known keys: ``image_path_prefix`` (str), ``table_fallback``
+#: (``"markdown"`` | ``"html"`` | ``"ascii"``), ``max_heading_level`` (int, 1-6),
+#: ``include_frontmatter`` (bool), ``preserve_line_breaks`` (bool), ``list_marker``
+#: (one-character str), ``escape_special_chars`` (bool — on by default),
+#: ``cleanup_preset`` (``"none"`` | ``"minimal"`` | ``"standard"`` — the default — |
+#: ``"aggressive"``), ``refine`` (bool), ``line_width`` (int, 0 = no wrapping),
+#: ``page_markers`` (``"none"`` | ``"comment"``), ``pages`` (``"all"``,
+#: ``{"range": {"from": n, "to": n}}`` or ``{"pages": [n, ...]}``) and ``ai_refine``
+#: (``{"base_url", "api_key", "model", "instructions"}``). A key outside this list,
+#: or a value the library cannot honour, raises :class:`UnpdfError` with
+#: ``kind == ErrorKind.INVALID_ARGUMENT``; ``pages`` naming a page the document does
+#: not have raises it with ``kind == ErrorKind.PAGE_OUT_OF_RANGE``.
+RenderOptions = "dict[str, Any]"
+
 
 def _parse_file(
     lib: ctypes.CDLL, source: PdfSource, options: "dict[str, Any] | None" = None
@@ -164,7 +175,9 @@ def _parse_file(
 
 
 def to_markdown(
-    source: PdfSource, flags: int = 0, options: "dict[str, Any] | None" = None
+    source: PdfSource,
+    options: "dict[str, Any] | None" = None,
+    render_options: "dict[str, Any] | None" = None,
 ) -> str:
     """
     Convert a PDF file to Markdown format.
@@ -172,14 +185,11 @@ def to_markdown(
     Args:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
             PDF's own bytes.
-        flags: Bitwise OR of ``UNPDF_FLAG_FRONTMATTER``,
-            ``UNPDF_FLAG_PAGE_MARKERS``, ``UNPDF_FLAG_REFINE`` and
-            ``UNPDF_FLAG_NO_ESCAPE`` (optional). All are importable from
-            ``unpdf``. Special Markdown characters are escaped unless
-            ``UNPDF_FLAG_NO_ESCAPE`` is set; ``UNPDF_FLAG_ESCAPE_SPECIAL`` is
-            accepted and has no effect.
         options: Parsing options — see :data:`ParseOptions`. ``None`` (the
             default) uses unpdf's own defaults.
+        render_options: Rendering options — see :data:`RenderOptions`, for
+            example ``{"include_frontmatter": True, "page_markers": "comment"}``.
+            ``None`` (the default) uses unpdf's own defaults.
 
     Returns:
         The extracted content as Markdown.
@@ -190,7 +200,10 @@ def to_markdown(
     lib = get_library()
     handle = _parse_file(lib, source, options)
     try:
-        result = lib.unpdf_to_markdown(handle, flags)
+        render_json = (
+            json.dumps(render_options).encode("utf-8") if render_options is not None else None
+        )
+        result = lib.unpdf_to_markdown_with_options(handle, render_json)
         if not result:
             raise _native_error(lib)
         return _take_string(lib, result)

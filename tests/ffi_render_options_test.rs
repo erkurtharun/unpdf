@@ -18,6 +18,7 @@ use unpdf::ffi::{
     unpdf_parse_bytes, unpdf_to_markdown, unpdf_to_markdown_with_options,
     UNPDF_ERROR_INVALID_ARGUMENT, UNPDF_FLAG_FRONTMATTER,
 };
+use unpdf::ErrorKind;
 
 unsafe fn take_string(ptr: *mut c_char) -> String {
     assert!(!ptr.is_null());
@@ -137,6 +138,22 @@ fn page_selection_reaches_the_renderer() {
             first.len() <= all.len(),
             "a one-page selection rendered more than the whole document"
         );
+    }
+}
+
+/// A page the document does not have is refused as `unpdf_page_to_markdown` refuses it,
+/// rather than rendering an empty document as if that were the page.
+#[test]
+fn a_page_the_document_does_not_have_is_rejected() {
+    let bytes = mixed_pdf();
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        assert!(!doc.is_null());
+        let json = cstr(r#"{"pages":{"pages":[2,7]}}"#);
+        let out = unpdf_to_markdown_with_options(doc, json.as_ptr());
+        assert!(out.is_null(), "rendered a selection naming page 7 of 2");
+        assert_eq!(unpdf_last_error_kind(), ErrorKind::PageOutOfRange as i32);
+        unpdf_free_document(doc);
     }
 }
 

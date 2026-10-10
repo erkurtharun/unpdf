@@ -41,12 +41,13 @@ impl Document {
         self.pages.len() as u32
     }
 
-    /// Get a page by number (1-indexed).
+    /// Get a page by its number in the PDF (1-indexed).
+    ///
+    /// The number is the page's own, not its position here: a document parsed with a page
+    /// selection holds only those pages, and one parsed leniently leaves out a page that
+    /// failed, so the third page held need not be page 3.
     pub fn get_page(&self, page_num: u32) -> Option<&Page> {
-        if page_num == 0 {
-            return None;
-        }
-        self.pages.get((page_num - 1) as usize)
+        self.pages.iter().find(|page| page.number == page_num)
     }
 
     /// Add a page to the document.
@@ -268,6 +269,19 @@ impl OutlineItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A document parsed with a page selection holds pages 3 and 4: page 3 is the first
+    /// one held, and there is no page 1.
+    #[test]
+    fn get_page_finds_a_page_by_its_number_not_its_position() {
+        let mut doc = Document::new();
+        doc.add_page(Page::new(3, 612.0, 792.0));
+        doc.add_page(Page::new(4, 612.0, 792.0));
+        assert_eq!(doc.get_page(3).map(|p| p.number), Some(3));
+        assert_eq!(doc.get_page(4).map(|p| p.number), Some(4));
+        assert!(doc.get_page(1).is_none());
+        assert!(doc.get_page(0).is_none());
+    }
 
     #[test]
     fn test_document_new() {

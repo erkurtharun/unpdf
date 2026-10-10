@@ -188,8 +188,9 @@ fn missing_feature(field: &str, feature: &str) -> String {
 ///   "max_heading_level": number,
 ///   "include_frontmatter": bool,
 ///   "preserve_line_breaks": bool,
+///   "list_marker": string,
 ///   "escape_special_chars": bool,
-///   "cleanup_preset": "minimal" | "standard" | "aggressive",
+///   "cleanup_preset": "none" | "minimal" | "standard" | "aggressive",
 ///   "refine": bool,
 ///   "line_width": number,
 ///   "page_markers": "none" | "comment",
@@ -206,6 +207,11 @@ fn missing_feature(field: &str, feature: &str) -> String {
 /// `ai_refine`'s three credential fields are all required when the object is present —
 /// the same rule [`FfiParseOptions`] applies to its own `ai_*` fields.
 ///
+/// `cleanup_preset` defaults to `"standard"`; `"none"` turns the cleanup pipeline off.
+/// `pages` must name pages of the document: a listed page it does not have, or a range
+/// none of its pages fall in, fails with `PageOutOfRange` rather than rendering nothing;
+/// a range that ends before it starts fails with `InvalidPageRange`.
+///
 /// A key outside this schema is rejected, so a misspelled option fails instead of
 /// quietly rendering with the default. The schema is the same in every build: `refine`
 /// and `ai_refine` are always known keys, and asking for one in a build without its
@@ -219,6 +225,7 @@ struct FfiRenderOptions {
     max_heading_level: Option<u8>,
     include_frontmatter: Option<bool>,
     preserve_line_breaks: Option<bool>,
+    list_marker: Option<String>,
     escape_special_chars: Option<bool>,
     cleanup_preset: Option<FfiCleanupPreset>,
     refine: Option<bool>,
@@ -239,6 +246,7 @@ enum FfiTableFallback {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum FfiCleanupPreset {
+    None,
     Minimal,
     Standard,
     Aggressive,
@@ -288,15 +296,29 @@ impl TryFrom<FfiRenderOptions> for RenderOptions {
         if let Some(v) = ffi.preserve_line_breaks {
             options.preserve_line_breaks = v;
         }
+        if let Some(marker) = ffi.list_marker {
+            let mut chars = marker.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => options.list_marker = c,
+                _ => return Err(format!("list_marker must be one character, got {marker:?}")),
+            }
+        }
         if let Some(v) = ffi.escape_special_chars {
             options.escape_special_chars = v;
         }
         if let Some(preset) = ffi.cleanup_preset {
-            options = options.with_cleanup_preset(match preset {
-                FfiCleanupPreset::Minimal => crate::CleanupPreset::Minimal,
-                FfiCleanupPreset::Standard => crate::CleanupPreset::Standard,
-                FfiCleanupPreset::Aggressive => crate::CleanupPreset::Aggressive,
-            });
+            options = match preset {
+                FfiCleanupPreset::None => options.without_cleanup(),
+                FfiCleanupPreset::Minimal => {
+                    options.with_cleanup_preset(crate::CleanupPreset::Minimal)
+                }
+                FfiCleanupPreset::Standard => {
+                    options.with_cleanup_preset(crate::CleanupPreset::Standard)
+                }
+                FfiCleanupPreset::Aggressive => {
+                    options.with_cleanup_preset(crate::CleanupPreset::Aggressive)
+                }
+            };
         }
         if ffi.refine == Some(true) {
             options = with_refine(options)?;
@@ -733,9 +755,58 @@ unparser_shared::export_string_getter!(
     {
         let document = &(*doc).inner;
         let options = render_options_from_json(options_json)?;
+        check_page_selection(document, &options.page_selection)?;
         crate::render::to_markdown(document, &options).map_err(ffi_err)
     }
 );
+
+/// Refuse a page selection the document cannot honour, the way `unpdf_page_to_markdown`
+/// refuses a page it does not have: a listed page that is not in the document, a range
+/// none of its pages fall in, or a range that ends before it starts. Rendering it would
+/// produce an empty or partial result that looks like a successful render of what was
+/// asked.
+fn check_page_selection(document: &Document, selection: &PageSelection) -> Result<(), FfiError> {
+    let out_of_range = |what: String| {
+        (
+            ErrorKind::PageOutOfRange as c_int,
+            format!(
+                "{what} is not in the document ({} pages)",
+                document.page_count()
+            ),
+        )
+    };
+    match selection {
+        PageSelection::All => Ok(()),
+        // By page number, as the renderer selects: a document parsed with a page selection
+        // holds only those pages, so a position is not a number.
+        PageSelection::Pages(list) => match list
+            .iter()
+            .find(|&&n| !document.pages.iter().any(|p| p.number == n))
+        {
+            Some(n) => Err(out_of_range(format!("page {n}"))),
+            None => Ok(()),
+        },
+        PageSelection::Range(range) if range.start() > range.end() => Err((
+            ErrorKind::InvalidPageRange as c_int,
+            format!(
+                "page range from {} to {} ends before it starts",
+                range.start(),
+                range.end()
+            ),
+        )),
+        PageSelection::Range(range) => {
+            if document.pages.iter().any(|p| range.contains(&p.number)) {
+                Ok(())
+            } else {
+                Err(out_of_range(format!(
+                    "no page from {} to {}",
+                    range.start(),
+                    range.end()
+                )))
+            }
+        }
+    }
+}
 
 unparser_shared::export_string_getter!(
     /// Convert a document to plain text.
@@ -1310,6 +1381,69 @@ unparser_shared::export_free_bytes!(
 mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
+
+    fn render_options(json: &str) -> Result<RenderOptions, String> {
+        let ffi = serde_json::from_str::<FfiRenderOptions>(json).map_err(|e| e.to_string())?;
+        RenderOptions::try_from(ffi)
+    }
+
+    /// Cleanup is on by default, so turning it off needs a value of its own.
+    #[test]
+    fn cleanup_preset_none_turns_the_cleanup_off() {
+        assert!(render_options("{}").unwrap().cleanup.is_some());
+        assert!(render_options(r#"{"cleanup_preset":"none"}"#)
+            .unwrap()
+            .cleanup
+            .is_none());
+        assert!(render_options(r#"{"cleanup_preset":"minimal"}"#)
+            .unwrap()
+            .cleanup
+            .is_some());
+    }
+
+    #[test]
+    fn list_marker_is_one_character() {
+        assert_eq!(
+            render_options(r#"{"list_marker":"*"}"#)
+                .unwrap()
+                .list_marker,
+            '*'
+        );
+        for bad in [r#"{"list_marker":""}"#, r#"{"list_marker":"**"}"#] {
+            let err = render_options(bad).unwrap_err();
+            assert!(err.contains("one character"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_page_selection_must_name_pages_of_the_document() {
+        let mut doc = Document::new();
+        doc.add_page(crate::model::Page::new(3, 612.0, 792.0));
+        doc.add_page(crate::model::Page::new(4, 612.0, 792.0));
+        let check = |selection| check_page_selection(&doc, &selection);
+        assert!(check(PageSelection::All).is_ok());
+        assert!(check(PageSelection::Pages(vec![3, 4])).is_ok());
+        assert!(
+            check(PageSelection::Range(1..=3)).is_ok(),
+            "the range holds page 3"
+        );
+
+        let (kind, message) = check(PageSelection::Pages(vec![3, 9])).unwrap_err();
+        assert_eq!(kind, ErrorKind::PageOutOfRange as c_int);
+        assert!(message.contains("page 9"), "{message}");
+        let (kind, _) = check(PageSelection::Pages(vec![1])).unwrap_err();
+        assert_eq!(
+            kind,
+            ErrorKind::PageOutOfRange as c_int,
+            "page 1 is not held"
+        );
+        let (kind, _) = check(PageSelection::Range(5..=8)).unwrap_err();
+        assert_eq!(kind, ErrorKind::PageOutOfRange as c_int);
+        #[allow(clippy::reversed_empty_ranges)]
+        let (kind, message) = check(PageSelection::Range(4..=3)).unwrap_err();
+        assert_eq!(kind, ErrorKind::InvalidPageRange as c_int);
+        assert!(message.contains("from 4 to 3"), "{message}");
+    }
 
     #[test]
     fn test_version() {

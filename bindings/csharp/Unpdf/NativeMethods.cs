@@ -45,16 +45,6 @@ internal static class NativeMethods
         return IntPtr.Zero;
     }
 
-    // Flags for markdown rendering
-    public const int UNPDF_FLAG_FRONTMATTER = 1;
-    // Accepted, no effect: escaping is the default. Turn it off with UNPDF_FLAG_NO_ESCAPE.
-    public const int UNPDF_FLAG_ESCAPE_SPECIAL = 2;
-    // Bit 4 is retired: it named a paragraph-spacing option that never reached the
-    // renderer. Retired bits are not reused.
-    public const int UNPDF_FLAG_PAGE_MARKERS = 8;
-    public const int UNPDF_FLAG_REFINE = 16;
-    public const int UNPDF_FLAG_NO_ESCAPE = 32;
-
     // JSON format options
     public const int UNPDF_JSON_PRETTY = 0;
     public const int UNPDF_JSON_COMPACT = 1;
@@ -103,10 +93,12 @@ internal static class NativeMethods
     public static extern void unpdf_free_document(IntPtr doc);
 
     /// <summary>
-    /// Convert a document to Markdown.
+    /// Convert a document to Markdown with a JSON object of rendering options.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr unpdf_to_markdown(IntPtr doc, int flags);
+    public static extern IntPtr unpdf_to_markdown_with_options(
+        IntPtr doc,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson);
 
     /// <summary>
     /// Convert a document to plain text.
@@ -149,12 +141,6 @@ internal static class NativeMethods
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr unpdf_get_author(IntPtr doc);
-
-    /// <summary>
-    /// Convert a single page to Markdown.
-    /// </summary>
-    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr unpdf_page_to_markdown(IntPtr doc, int pageNum, int flags);
 
     /// <summary>
     /// Get plain text of a single page.

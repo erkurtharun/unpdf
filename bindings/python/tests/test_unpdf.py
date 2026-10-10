@@ -683,23 +683,34 @@ class TestErrorKind:
         assert err.kind == 9999
 
 
-class TestMarkdownFlags:
-    """A core render option is only real to a Python caller once the flag that
-    selects it is importable and actually reaches the renderer. An ignored flag
-    does not fail: the call succeeds and simply does not do what was asked."""
-
-    def test_flags_are_exported_from_the_package(self):
-        """The ``flags`` argument is public, so its constants must be too."""
-        assert unpdf.UNPDF_FLAG_FRONTMATTER == 1
-        assert unpdf.UNPDF_FLAG_ESCAPE_SPECIAL == 2
-        assert unpdf.UNPDF_FLAG_PAGE_MARKERS == 8
-        assert unpdf.UNPDF_FLAG_REFINE == 16
+class TestRenderOptions:
+    """A render option is only real to a Python caller once it reaches the
+    renderer. An ignored option does not fail: the call succeeds and simply does
+    not do what was asked."""
 
     def test_refine_does_not_error_when_enabled(self, tmp_path):
         path = tmp_path / "text.pdf"
         path.write_bytes(_text_pdf())
-        markdown = unpdf.to_markdown(str(path), unpdf.UNPDF_FLAG_REFINE)
-        assert len(markdown) > 0
+        markdown = unpdf.to_markdown(str(path), render_options={"refine": True})
+        assert "Hello World" in markdown
+
+    def test_max_heading_level_reaches_the_renderer(self):
+        # A heading level outside 1-6 is refused, which only happens if the key
+        # reaches the native options at all.
+        with pytest.raises(unpdf.UnpdfError) as raised:
+            unpdf.to_markdown(_text_pdf(), render_options={"max_heading_level": 9})
+        assert raised.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+
+    def test_misspelled_render_option_raises_invalid_argument(self):
+        with pytest.raises(unpdf.UnpdfError) as raised:
+            unpdf.to_markdown(_text_pdf(), render_options={"page_marker": "comment"})
+        assert raised.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
+        assert "page_marker" in str(raised.value)
+
+    def test_a_page_the_document_does_not_have_raises_page_out_of_range(self):
+        with pytest.raises(unpdf.UnpdfError) as raised:
+            unpdf.to_markdown(_text_pdf(), render_options={"pages": {"pages": [5]}})
+        assert raised.value.kind == unpdf.ErrorKind.PAGE_OUT_OF_RANGE
 
     def test_page_markers_off_by_default(self, tmp_path):
         path = tmp_path / "text.pdf"
@@ -709,21 +720,21 @@ class TestMarkdownFlags:
     def test_page_markers_marks_page_boundaries(self, tmp_path):
         path = tmp_path / "text.pdf"
         path.write_bytes(_text_pdf())
-        markdown = unpdf.to_markdown(str(path), unpdf.UNPDF_FLAG_PAGE_MARKERS)
+        markdown = unpdf.to_markdown(str(path), render_options={"page_markers": "comment"})
         assert "<!-- page 1 -->" in markdown
 
     def test_page_markers_does_not_imply_frontmatter(self, tmp_path):
         path = tmp_path / "text.pdf"
         path.write_bytes(_text_pdf())
-        markdown = unpdf.to_markdown(str(path), unpdf.UNPDF_FLAG_PAGE_MARKERS)
+        markdown = unpdf.to_markdown(str(path), render_options={"page_markers": "comment"})
         assert not markdown.startswith("---")
 
-    def test_flags_combine(self, tmp_path):
+    def test_options_combine(self, tmp_path):
         path = tmp_path / "text.pdf"
         path.write_bytes(_text_pdf())
         markdown = unpdf.to_markdown(
             str(path),
-            unpdf.UNPDF_FLAG_FRONTMATTER | unpdf.UNPDF_FLAG_PAGE_MARKERS,
+            render_options={"include_frontmatter": True, "page_markers": "comment"},
         )
         assert markdown.startswith("---")
         assert "<!-- page 1 -->" in markdown

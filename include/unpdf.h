@@ -177,16 +177,21 @@ char* unpdf_to_markdown(const UnpdfDocument* doc, uint32_t flags);
  *
  *   { "image_path_prefix": string, "table_fallback": "markdown" | "html" | "ascii",
  *     "max_heading_level": number, "include_frontmatter": bool,
- *     "preserve_line_breaks": bool, "escape_special_chars": bool,
- *     "cleanup_preset": "minimal" | "standard" | "aggressive", "refine": bool,
+ *     "preserve_line_breaks": bool, "list_marker": string (one character),
+ *     "escape_special_chars": bool,
+ *     "cleanup_preset": "none" | "minimal" | "standard" | "aggressive", "refine": bool,
  *     "line_width": number, "page_markers": "none" | "comment",
  *     "pages": "all" | { "range": { "from": n, "to": n } } | { "pages": [n, ...] },
  *     "ai_refine": { "base_url": string, "api_key": string, "model": string,
  *                    "instructions": string } }
  *
- * A field outside this schema fails with UNPDF_ERROR_INVALID_ARGUMENT. So does asking for
- * a pass this build does not include: "refine": true without the `refine` feature,
- * "ai_refine" without the `ai` feature.
+ * cleanup_preset defaults to "standard"; "none" turns the cleanup off. A field outside
+ * this schema fails with UNPDF_ERROR_INVALID_ARGUMENT. So does asking for a pass this
+ * build does not include: "refine": true without the `refine` feature, "ai_refine"
+ * without the `ai` feature. `pages` must name pages of the document: a listed page it
+ * does not have, or a range none of its pages fall in, fails with
+ * UNPDF_ERROR_PAGE_OUT_OF_RANGE; a range ending before it starts, with
+ * UNPDF_ERROR_INVALID_PAGE_RANGE.
  *
  * @param options_json UTF-8, null-terminated JSON, or NULL.
  * @return Markdown string (must be freed with unpdf_free_string), or NULL on error --

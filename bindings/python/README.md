@@ -61,21 +61,36 @@ unpdf.to_markdown(pdf_bytes)
 Every function below also accepts an optional `options: dict` keyword argument —
 see [Parsing options](#parsing-options).
 
-### `to_markdown(source: PdfSource, flags: int = 0, options: dict | None = None) -> str`
-Convert a PDF file to Markdown format. `flags` is a bitwise OR of:
+### `to_markdown(source: PdfSource, options: dict | None = None, render_options: dict | None = None) -> str`
+Convert a PDF file to Markdown format. `render_options` is a dict of rendering settings;
+every key is optional and an absent one keeps the default:
 
-| Constant | Effect |
+| Key | Value |
 |---|---|
-| `UNPDF_FLAG_FRONTMATTER` | Emit YAML frontmatter with document metadata |
-| `UNPDF_FLAG_NO_ESCAPE` | Write text without escaping Markdown special characters (escaping is the default) |
-| `UNPDF_FLAG_PAGE_MARKERS` | Mark each page boundary with `<!-- page N -->` |
+| `include_frontmatter` | `bool` — YAML frontmatter with the document metadata |
+| `page_markers` | `"none"` (default) or `"comment"` — `<!-- page N -->` at each page boundary |
+| `escape_special_chars` | `bool` (default `True`) — escape text that would read as Markdown syntax |
+| `table_fallback` | `"markdown"` (default), `"html"` or `"ascii"` — how a table Markdown cannot express is written |
+| `max_heading_level` | `int` 1–6 (default 6) — deeper headings take this level |
+| `preserve_line_breaks` | `bool` — keep line breaks inside paragraphs |
+| `list_marker` | one character (default `"-"`) |
+| `cleanup_preset` | `"none"`, `"minimal"`, `"standard"` (default) or `"aggressive"` |
+| `refine` | `bool` — the lossless shape-refinement pass |
+| `line_width` | `int` — wrap long lines (0, the default, does not wrap) |
+| `pages` | `"all"`, `{"range": {"from": 1, "to": 3}}` or `{"pages": [1, 4]}` |
+| `image_path_prefix` | `str` — prefix of the image paths written |
+| `ai_refine` | `{"base_url", "api_key", "model", "instructions"}` — a generative rewrite pass |
+
+A key outside this table, or a value the library cannot honour, raises `UnpdfError` with
+`kind == ErrorKind.INVALID_ARGUMENT`; a page the document does not have, with
+`ErrorKind.PAGE_OUT_OF_RANGE`.
 
 ```python
 import unpdf
 
 markdown = unpdf.to_markdown(
     "document.pdf",
-    unpdf.UNPDF_FLAG_FRONTMATTER | unpdf.UNPDF_FLAG_PAGE_MARKERS,
+    render_options={"include_frontmatter": True, "page_markers": "comment"},
 )
 ```
 

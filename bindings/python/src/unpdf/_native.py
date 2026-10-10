@@ -208,16 +208,10 @@ _lib.unpdf_render_page.argtypes = [
 ]
 _lib.unpdf_render_page.restype = ctypes.POINTER(ctypes.c_uint8)
 
-# Export constants
-UNPDF_FLAG_FRONTMATTER = 1
-# Accepted, no effect: escaping is the default. Turn it off with UNPDF_FLAG_NO_ESCAPE.
-UNPDF_FLAG_ESCAPE_SPECIAL = 2
-# Bit 4 is retired: it named a paragraph-spacing option that never reached the
-# renderer. Retired bits are not reused.
-UNPDF_FLAG_PAGE_MARKERS = 8
-UNPDF_FLAG_REFINE = 16
-UNPDF_FLAG_NO_ESCAPE = 32
+_lib.unpdf_to_markdown_with_options.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+_lib.unpdf_to_markdown_with_options.restype = ctypes.c_void_p
 
+# Export constants
 UNPDF_JSON_PRETTY = 0
 UNPDF_JSON_COMPACT = 1
 

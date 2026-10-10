@@ -2,7 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- **Every rendering setting from the bindings.** .NET `MarkdownOptions` gains `ImagePathPrefix`,
+  `TableFallback` (`Markdown` · `Html` · `Ascii`), `MaxHeadingLevel`, `PreserveLineBreaks`,
+  `ListMarker`, `Cleanup` (a `CleanupPreset`, or `null` for none), `LineWidth` and `Pages`;
+  Python `to_markdown` takes `render_options`, a dict of the same settings. Both render through
+  `unpdf_to_markdown_with_options`, so every setting reaches the library — they previously
+  reached four.
+- The options JSON of `unpdf_to_markdown_with_options` takes `list_marker` (one character) and
+  `"cleanup_preset": "none"`, which turns the cleanup off; it is on by default, and no value
+  could turn it off before.
+
 ### Changed
+
+- **Breaking (Python): `to_markdown(source, options=None, render_options=None)`.** The `flags`
+  argument and the `UNPDF_FLAG_*` constants are gone; the settings they selected are
+  `render_options` keys: `UNPDF_FLAG_FRONTMATTER` → `{"include_frontmatter": True}`,
+  `UNPDF_FLAG_PAGE_MARKERS` → `{"page_markers": "comment"}`, `UNPDF_FLAG_REFINE` →
+  `{"refine": True}`, `UNPDF_FLAG_NO_ESCAPE` → `{"escape_special_chars": False}`.
+- .NET `PageToMarkdown(n, options)` renders page `n` of the document with every option, where it
+  rendered the page alone with four; the frontmatter it writes now carries the document's
+  metadata.
 
 - **Breaking: an option the library does not know is an error.** The options JSON of
   `unpdf_parse_*_with_options` and `unpdf_to_markdown_with_options` ignored keys outside its
@@ -15,6 +36,14 @@
 
 ### Fixed
 
+- **`Document::get_page(n)` finds page `n`.** It returned the `n`-th page held, so in a document
+  parsed with a page selection, or leniently past a page that failed, it returned another page
+  or none — and `unpdf_page_to_markdown` rendered or refused the wrong page with it.
+- **A page selection naming pages the document does not have fails.** The `pages` render option
+  rendered nothing for a page outside the document, and nothing said so. A listed page the
+  document does not have, or a range none of its pages fall in, now fails with
+  `UNPDF_ERROR_PAGE_OUT_OF_RANGE`, and a range that ends before it starts with
+  `UNPDF_ERROR_INVALID_PAGE_RANGE`.
 - **A column of figures set flush right is a column.** In a table without rules, columns were
   found where text starts on many rows; figures set flush right start wherever their width puts
   them (`2454` left of `958`), so their column was missed and the figures were run together

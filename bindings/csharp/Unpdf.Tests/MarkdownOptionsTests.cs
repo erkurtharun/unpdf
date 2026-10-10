@@ -4,8 +4,7 @@ namespace Unpdf.Tests;
 
 /// <summary>
 /// A render option the core has had for several releases is only real to a .NET caller
-/// once <see cref="MarkdownOptions"/> can name it and the flag it maps to reaches the
-/// renderer. Nothing about a call reports an option that was silently ignored — the
+/// once <see cref="MarkdownOptions"/> can name it and it reaches the renderer. Nothing about a call reports an option that was silently ignored — the
 /// render succeeds and simply does not do what was asked.
 /// </summary>
 public class MarkdownOptionsTests
@@ -70,5 +69,60 @@ public class MarkdownOptionsTests
         var markdown = doc.ToMarkdown(new MarkdownOptions { Refine = true });
 
         Assert.NotEmpty(markdown);
+    }
+    /// <summary>
+    /// A heading level outside 1-6 is refused — which only happens if the property reaches
+    /// the native options at all.
+    /// </summary>
+    [Fact]
+    public void MaxHeadingLevel_ReachesTheNativeOptions()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+
+        var error = Assert.Throws<UnpdfException>(
+            () => doc.ToMarkdown(new MarkdownOptions { MaxHeadingLevel = 9 }));
+
+        Assert.Equal(UnpdfErrorKind.InvalidArgument, error.Kind);
+    }
+
+    [Fact]
+    public void Cleanup_CanBeTurnedOff()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+
+        Assert.Contains("Hello World", doc.ToMarkdown(new MarkdownOptions { Cleanup = null }));
+    }
+
+    [Fact]
+    public void PageToMarkdown_RendersThePageWithTheOptions()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+
+        var markdown = doc.PageToMarkdown(1, new MarkdownOptions { PageMarkers = true });
+
+        Assert.Contains("<!-- page 1 -->", markdown);
+        Assert.Contains("Hello World", markdown);
+    }
+
+    [Fact]
+    public void PageToMarkdown_APageTheDocumentDoesNotHave_IsPageOutOfRange()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+
+        var error = Assert.Throws<UnpdfException>(() => doc.PageToMarkdown(7));
+
+        Assert.Equal(UnpdfErrorKind.PageOutOfRange, error.Kind);
+    }
+
+    [Fact]
+    public void Pages_SelectsWhatIsRendered()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+
+        var error = Assert.Throws<UnpdfException>(
+            () => doc.ToMarkdown(new MarkdownOptions { Pages = new[] { 2 } }));
+
+        Assert.Equal(UnpdfErrorKind.PageOutOfRange, error.Kind);
+        Assert.Contains("Hello World", doc.ToMarkdown(new MarkdownOptions { Pages = new[] { 1 } }));
     }
 }
