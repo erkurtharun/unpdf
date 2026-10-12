@@ -6,7 +6,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use unpdf::model::{Block, Metadata, Page};
-use unpdf::render::{CleanupPipeline, PageMarkerStyle, RenderOptions, StreamingRenderer};
+use unpdf::render::{BlockRenderer, CleanupPipeline, PageMarkerStyle, RenderOptions};
 
 fn image_hash(data: &[u8]) -> (u64, usize) {
     // Sample head + tail instead of hashing all bytes — O(1) regardless of image size.
@@ -52,6 +52,7 @@ pub struct MultiFormatWriter {
     json: Option<BufWriter<File>>,
     json_path: Option<PathBuf>,
     render_opts: RenderOptions,
+    blocks: BlockRenderer,
     json_first_page: bool,
     /// 이미지 출력 디렉토리. None 이면 이미지를 디스크에 쓰지 않음.
     /// 디렉토리는 `MultiFormatWriter::new` 이전에 생성되어 있어야 하며,
@@ -100,6 +101,7 @@ impl MultiFormatWriter {
             txt_path,
             json,
             json_path,
+            blocks: BlockRenderer::new(render_opts.clone()),
             render_opts,
             json_first_page: true,
             images_dir,
@@ -203,11 +205,9 @@ impl MultiFormatWriter {
                 w.write_all(marker.as_bytes())?;
                 self.md_written = true;
             }
-            let placeholder = unpdf::model::Document::new();
-            let renderer = StreamingRenderer::new(&placeholder, self.render_opts.clone());
             let mut previous = None;
             for block in &page.elements {
-                let chunk = renderer.render_block_after(previous, block);
+                let chunk = self.blocks.render_block_after(previous, block);
                 if !chunk.is_empty() {
                     w.write_all(chunk.as_bytes())?;
                     self.md_written = true;

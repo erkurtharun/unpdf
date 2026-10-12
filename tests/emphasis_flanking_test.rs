@@ -39,6 +39,6 @@ fn the_batch_writer_keeps_punctuation_outside_the_markers() {
 #[test]
 fn the_streaming_writer_keeps_punctuation_outside_the_markers() {
     let doc = math_line();
-    let md = collect_content(StreamingRenderer::new(&doc, RenderOptions::default()));
+    let md = collect_content(StreamingRenderer::new(&doc, RenderOptions::default()).unwrap());
     assert!(md.contains(EXPECTED), "{md}");
 }

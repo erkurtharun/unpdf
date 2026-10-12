@@ -8,6 +8,20 @@
   `AiModel` and `AiImageScope` (a new `AiImageScope` enum). The C ABI's parse options took
   all five, and Python reached them through its options dict; .NET had no way to set them.
 
+- `render::BlockRenderer` renders single blocks to Markdown without a document, for a
+  caller that drives its own page loop — what `StreamingRenderer::render_block_after` was
+  used for, without building an empty `Document` to construct a `StreamingRenderer`.
+
+### Changed
+
+- **Breaking: `StreamingRenderer::new` returns `Result`.** It checks
+  `RenderOptions::page_selection` against the document before yielding anything and fails
+  with `PageOutOfRange` / `InvalidPageRange` as `to_markdown` does. A selection naming a page
+  the document lacks used to yield a document with no pages.
+- **Breaking: `StreamingRenderer::render_block_public` and
+  `StreamingRenderer::render_block_after` move to `BlockRenderer`** (as `render_block` and
+  `render_block_after`).
+
 ### Removed
 
 - **Breaking: `RenderOptions::image_dir`, `RenderOptions::with_image_dir` and
@@ -21,6 +35,11 @@
 
 ### Fixed
 
+- **`render::to_text` renders the pages `RenderOptions::page_selection` selects**, and
+  rejects a selection naming a missing page as `to_markdown` does. It read only the cleanup
+  setting and always rendered every page, so `unpdf::to_text(path, &options)` with a page
+  selection returned the whole document. `unpdf::to_text` and
+  `unpdf::to_markdown_with_options` now also parse only the selected pages.
 - **`PageStreamOptions::window_size` bounds a parallel run.** It is the most pages that may be
   parsing, or parsed and waiting for an earlier page, at once, and nothing enforced it: a slow
   early page let every later page finish and pile up in memory behind it. Pages are now handed

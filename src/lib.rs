@@ -251,7 +251,7 @@ pub fn to_markdown_with_options<P: AsRef<Path>>(
     path: P,
     options: &RenderOptions,
 ) -> Result<String> {
-    let doc = parse_file(path)?;
+    let doc = parse_file_with_options(path, selected_pages(options))?;
     render::to_markdown(&doc, options)
 }
 
@@ -268,8 +268,14 @@ pub fn to_markdown_with_options<P: AsRef<Path>>(
 /// ```
 #[cfg(not(target_arch = "wasm32"))]
 pub fn to_text<P: AsRef<Path>>(path: P, options: &RenderOptions) -> Result<String> {
-    let doc = parse_file(path)?;
+    let doc = parse_file_with_options(path, selected_pages(options))?;
     render::to_text(&doc, options)
+}
+
+/// Parse only the pages `options` will render — the rest would be parsed to be dropped.
+#[cfg(not(target_arch = "wasm32"))]
+fn selected_pages(options: &RenderOptions) -> ParseOptions {
+    ParseOptions::new().with_pages(options.page_selection.clone())
 }
 
 /// Convert a PDF to JSON.

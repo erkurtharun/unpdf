@@ -59,8 +59,7 @@ impl MarkdownRenderer {
 
     /// The page selection must name pages of this document — see [`PageSelection::check`](super::PageSelection::check).
     fn check_page_selection(&self, doc: &Document) -> Result<()> {
-        let numbers: Vec<u32> = doc.pages.iter().map(|page| page.number).collect();
-        self.options.page_selection.check(&numbers)
+        self.options.page_selection.check_document(doc)
     }
 
     fn render_internal(&mut self, doc: &Document) -> Result<String> {
@@ -452,6 +451,7 @@ mod tests {
         let options = RenderOptions::new().with_image_prefix("images/");
         let batch = to_markdown(&doc, &options).unwrap();
         let streamed: String = crate::render::streaming::StreamingRenderer::new(&doc, options)
+            .unwrap()
             .filter_map(|e| match e {
                 crate::render::streaming::RenderEvent::Block(s) => Some(s),
                 _ => None,

@@ -12,7 +12,7 @@
 //!
 //! fn main() -> unpdf::Result<()> {
 //!     let doc = parse_file("large-document.pdf")?;
-//!     let renderer = StreamingRenderer::new(&doc, Default::default());
+//!     let renderer = StreamingRenderer::new(&doc, Default::default())?;
 //!
 //!     for event in renderer {
 //!         match event {
@@ -30,6 +30,7 @@
 //! }
 //! ```
 
+use crate::error::Result;
 use crate::model::{Block, Document, Metadata};
 
 use super::syntax::{escape_markdown, leading_char, render_table};
@@ -130,20 +131,30 @@ enum StreamState {
 /// entire output in memory.
 pub struct StreamingRenderer<'a> {
     doc: &'a Document,
-    options: RenderOptions,
+    blocks: BlockRenderer,
     state: StreamState,
     current_page_number: u32,
 }
 
 impl<'a> StreamingRenderer<'a> {
     /// Create a new streaming renderer.
-    pub fn new(doc: &'a Document, options: RenderOptions) -> Self {
-        Self {
+    ///
+    /// Fails before yielding anything when `options.page_selection` names a page `doc`
+    /// does not have, as [`to_markdown`](super::to_markdown) does — see
+    /// [`PageSelection::check`](super::PageSelection::check). An iterator has no place to
+    /// report it later, and honoured quietly the selection reads as an empty document.
+    pub fn new(doc: &'a Document, options: RenderOptions) -> Result<Self> {
+        options.page_selection.check_document(doc)?;
+        Ok(Self {
             doc,
-            options,
+            blocks: BlockRenderer::new(options),
             state: StreamState::Initial,
             current_page_number: 0,
-        }
+        })
+    }
+
+    fn options(&self) -> &RenderOptions {
+        &self.blocks.options
     }
 
     /// Get the number of pages in the document.
@@ -163,20 +174,29 @@ impl<'a> StreamingRenderer<'a> {
 
     /// Find the next page that should be rendered (respecting page selection).
     fn find_next_page(&self, start_index: usize) -> Option<usize> {
-        for i in start_index..self.doc.pages.len() {
-            let page_num = self.doc.pages[i].number;
-            if self.options.page_selection.includes(page_num) {
-                return Some(i);
-            }
-        }
-        None
+        (start_index..self.doc.pages.len()).find(|&i| {
+            self.options()
+                .page_selection
+                .includes(self.doc.pages[i].number)
+        })
     }
+}
 
-    /// Render a single `Block` to its Markdown fragment. Intended for
-    /// consumers that drive their own page-by-page rendering loop
-    /// (e.g., streaming CLI writers).
-    pub fn render_block_public(&self, block: &crate::model::Block) -> String {
-        self.render_block(block)
+/// Renders single blocks to Markdown fragments, without a document.
+///
+/// For consumers that drive their own page-by-page loop (a writer receiving pages as
+/// they are parsed) and want exactly what [`StreamingRenderer`] and
+/// [`to_markdown`](super::to_markdown) write for each block.
+#[derive(Debug, Clone, Default)]
+pub struct BlockRenderer {
+    options: RenderOptions,
+}
+
+impl BlockRenderer {
+    /// Create a block renderer with these options. Page-level options (selection,
+    /// markers, frontmatter) are the caller's loop's to apply.
+    pub fn new(options: RenderOptions) -> Self {
+        Self { options }
     }
 
     /// Render `block` as it appears after `previous` on the same page, including the
@@ -195,8 +215,8 @@ impl<'a> StreamingRenderer<'a> {
         content
     }
 
-    /// Render a single block to string.
-    pub(crate) fn render_block(&self, block: &Block) -> String {
+    /// Render a single block to its Markdown fragment.
+    pub fn render_block(&self, block: &Block) -> String {
         match block {
             Block::Paragraph(p) => {
                 if p.is_empty() {
@@ -328,7 +348,7 @@ impl<'a> Iterator for StreamingRenderer<'a> {
         loop {
             match self.state {
                 StreamState::Initial => {
-                    if self.options.include_frontmatter {
+                    if self.options().include_frontmatter {
                         self.state = StreamState::Frontmatter;
                         return Some(RenderEvent::Frontmatter(
                             self.doc.metadata.to_yaml_frontmatter(),
@@ -354,7 +374,7 @@ impl<'a> Iterator for StreamingRenderer<'a> {
                     if let Some(page_idx) = self.find_next_page(0) {
                         let page = &self.doc.pages[page_idx];
                         self.current_page_number = page.number;
-                        if self.options.page_markers == PageMarkerStyle::Comment {
+                        if self.options().page_markers == PageMarkerStyle::Comment {
                             self.state = StreamState::PageMarker {
                                 page_index: page_idx,
                             };
@@ -381,7 +401,7 @@ impl<'a> Iterator for StreamingRenderer<'a> {
                     if block_index < page.elements.len() {
                         let block = &page.elements[block_index];
                         let previous = block_index.checked_sub(1).map(|i| &page.elements[i]);
-                        let content = self.render_block_after(previous, block);
+                        let content = self.blocks.render_block_after(previous, block);
 
                         self.state = StreamState::InPage {
                             page_index,
@@ -408,7 +428,7 @@ impl<'a> Iterator for StreamingRenderer<'a> {
                     if let Some(page_idx) = self.find_next_page(next_page) {
                         let page = &self.doc.pages[page_idx];
                         self.current_page_number = page.number;
-                        if self.options.page_markers == PageMarkerStyle::Comment {
+                        if self.options().page_markers == PageMarkerStyle::Comment {
                             self.state = StreamState::PageMarker {
                                 page_index: page_idx,
                             };
@@ -483,15 +503,15 @@ mod tests {
         let expected = r#"[see \[3\] \*now\*](https://example.com "say \"hi\"")"#;
         let batch = crate::render::to_markdown(&doc, &RenderOptions::default()).unwrap();
         assert!(batch.contains(expected), "to_markdown: {batch:?}");
-        let streamed = StreamingRenderer::new(&doc, RenderOptions::default())
-            .render_block_public(&Block::Paragraph(para));
+        let streamed =
+            BlockRenderer::new(RenderOptions::default()).render_block(&Block::Paragraph(para));
         assert!(streamed.contains(expected), "streaming: {streamed:?}");
     }
 
     #[test]
     fn test_streaming_renderer_empty_doc() {
         let doc = Document::new();
-        let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+        let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
         let events: Vec<_> = renderer.collect();
 
         assert!(events.len() >= 2); // At least DocumentStart and DocumentEnd
@@ -522,7 +542,7 @@ mod tests {
 
         let options =
             RenderOptions::default().with_table_fallback(crate::render::TableFallback::Html);
-        let renderer = StreamingRenderer::new(&doc, options);
+        let renderer = StreamingRenderer::new(&doc, options).unwrap();
         let content = collect_content(renderer);
 
         assert!(
@@ -538,7 +558,7 @@ mod tests {
         page.add_paragraph(Paragraph::with_text("Hello, world!"));
         doc.add_page(page);
 
-        let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+        let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
         let events: Vec<_> = renderer.collect();
 
         // Should have: DocumentStart, PageStart, Block, PageEnd, DocumentEnd
@@ -563,7 +583,7 @@ mod tests {
         doc.add_page(page);
 
         let options = RenderOptions::default().with_frontmatter(true);
-        let renderer = StreamingRenderer::new(&doc, options);
+        let renderer = StreamingRenderer::new(&doc, options).unwrap();
         let events: Vec<_> = renderer.collect();
 
         // Should start with frontmatter
@@ -577,7 +597,7 @@ mod tests {
         page.add_paragraph(Paragraph::with_text("Test content"));
         doc.add_page(page);
 
-        let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+        let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
         let content = collect_content(renderer);
 
         assert!(content.contains("Test content"));
@@ -605,7 +625,7 @@ mod tests {
         doc.add_page(page2);
 
         let options = RenderOptions::default().with_page_markers(super::PageMarkerStyle::Comment);
-        let renderer = StreamingRenderer::new(&doc, options);
+        let renderer = StreamingRenderer::new(&doc, options).unwrap();
         let content = collect_content(renderer);
 
         assert!(
@@ -623,6 +643,43 @@ mod tests {
         assert!(p1 < p2, "page 1 marker must precede page 2 marker");
     }
 
+    fn two_page_doc() -> Document {
+        let mut doc = Document::new();
+        for (number, text) in [(1, "Page one"), (2, "Page two")] {
+            let mut page = Page::letter(number);
+            page.add_paragraph(Paragraph::with_text(text));
+            doc.add_page(page);
+        }
+        doc
+    }
+
+    #[test]
+    fn streaming_renders_the_selected_pages() {
+        let doc = two_page_doc();
+        let options = RenderOptions::default().with_page_list(vec![2]);
+        let content = collect_content(StreamingRenderer::new(&doc, options).unwrap());
+        assert_eq!(content, "Page two");
+    }
+
+    /// The selection is checked before the first event, as `to_markdown` checks it — an
+    /// iterator that honoured it quietly yielded a document with no pages.
+    #[test]
+    fn streaming_rejects_a_selection_naming_a_missing_page() {
+        let doc = two_page_doc();
+        for options in [
+            RenderOptions::default().with_page_list(vec![1, 5]),
+            RenderOptions::default().with_page_range(3..=4),
+        ] {
+            let batch = crate::render::to_markdown(&doc, &options).map(|_| ());
+            let streamed = StreamingRenderer::new(&doc, options).map(|_| ());
+            assert!(
+                matches!(streamed, Err(crate::Error::PageOutOfRange(..))),
+                "{streamed:?}"
+            );
+            assert_eq!(format!("{streamed:?}"), format!("{batch:?}"));
+        }
+    }
+
     #[test]
     fn test_streaming_renderer_no_markers_by_default() {
         let mut doc = Document::new();
@@ -630,7 +687,7 @@ mod tests {
         page.add_paragraph(Paragraph::with_text("Content"));
         doc.add_page(page);
 
-        let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+        let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
         let content = collect_content(renderer);
         assert!(
             !content.contains("<!-- page "),

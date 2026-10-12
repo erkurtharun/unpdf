@@ -32,7 +32,7 @@ fn create_sample_document() -> Document {
 #[test]
 fn test_streaming_renderer_basic() {
     let doc = create_sample_document();
-    let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+    let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
 
     let events: Vec<_> = renderer.collect();
 
@@ -47,7 +47,7 @@ fn test_streaming_renderer_basic() {
 #[test]
 fn test_streaming_renderer_page_events() {
     let doc = create_sample_document();
-    let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+    let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
 
     let events: Vec<_> = renderer.collect();
 
@@ -70,7 +70,7 @@ fn test_streaming_renderer_page_events() {
 #[test]
 fn test_streaming_renderer_content() {
     let doc = create_sample_document();
-    let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+    let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
 
     let content = collect_content(renderer);
 
@@ -83,7 +83,7 @@ fn test_streaming_renderer_content() {
 fn test_streaming_renderer_with_frontmatter() {
     let doc = create_sample_document();
     let options = RenderOptions::default().with_frontmatter(true);
-    let renderer = StreamingRenderer::new(&doc, options);
+    let renderer = StreamingRenderer::new(&doc, options).unwrap();
 
     let events: Vec<_> = renderer.collect();
 
@@ -101,7 +101,7 @@ fn test_streaming_renderer_with_frontmatter() {
 fn test_streaming_renderer_page_selection() {
     let doc = create_sample_document();
     let options = RenderOptions::default().with_pages(PageSelection::Range(1..=2));
-    let renderer = StreamingRenderer::new(&doc, options.clone());
+    let renderer = StreamingRenderer::new(&doc, options.clone()).unwrap();
 
     let events: Vec<_> = renderer.collect();
 
@@ -114,7 +114,7 @@ fn test_streaming_renderer_page_selection() {
     assert_eq!(page_starts.len(), 2);
 
     // Should not contain page 3 content
-    let content = collect_content(StreamingRenderer::new(&doc, options));
+    let content = collect_content(StreamingRenderer::new(&doc, options).unwrap());
     assert!(content.contains("Introduction"));
     assert!(content.contains("Chapter 1"));
     assert!(!content.contains("Conclusion text"));
@@ -123,7 +123,7 @@ fn test_streaming_renderer_page_selection() {
 #[test]
 fn test_streaming_renderer_empty_document() {
     let doc = Document::new();
-    let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+    let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
 
     let events: Vec<_> = renderer.collect();
 
@@ -170,7 +170,7 @@ fn test_render_event_methods() {
 #[test]
 fn test_streaming_renderer_is_done() {
     let doc = create_sample_document();
-    let mut renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+    let mut renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
 
     assert!(!renderer.is_done());
 
@@ -183,7 +183,7 @@ fn test_streaming_renderer_is_done() {
 #[test]
 fn test_streaming_renderer_page_count() {
     let doc = create_sample_document();
-    let renderer = StreamingRenderer::new(&doc, RenderOptions::default());
+    let renderer = StreamingRenderer::new(&doc, RenderOptions::default()).unwrap();
 
     assert_eq!(renderer.page_count(), 3);
 }

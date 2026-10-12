@@ -307,6 +307,13 @@ impl PageSelection {
         }
     }
 
+    /// [`check`](Self::check) against the pages `doc` holds — what every renderer that takes
+    /// a selection does before it renders.
+    pub(crate) fn check_document(&self, doc: &crate::model::Document) -> crate::Result<()> {
+        let numbers: Vec<u32> = doc.pages.iter().map(|page| page.number).collect();
+        self.check(&numbers)
+    }
+
     /// Parse a page selection string (e.g., "1-10", "1,3,5,7-10").
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim();

@@ -17,7 +17,7 @@ pub use markdown::{to_markdown, to_markdown_with_stats, MarkdownRenderer};
 pub use options::AiRefineOptions;
 pub use options::{PageMarkerStyle, PageSelection, RenderOptions, TableFallback};
 pub use result::{ExtractionStats, RenderResult};
-pub use streaming::{collect_content, RenderEvent, StreamingRenderer};
+pub use streaming::{collect_content, BlockRenderer, RenderEvent, StreamingRenderer};
 pub use text::to_text;
 #[cfg(feature = "refine")]
 pub use unparser_shared::refine::{refine, RefineOptions};
