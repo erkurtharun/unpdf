@@ -2085,22 +2085,30 @@ pub(crate) fn ends_a_contents_entry(text: &str) -> bool {
     if !(is_number && reference.len() <= 4 || is_roman) {
         return false;
     }
-    leader_dots(rest.chars().rev()) >= 4
+    starts_with_leader(rest.chars().rev())
 }
 
-/// The dots of the leader a run of characters starts with: periods count one, the ellipsis
-/// character three, and the spaces a spaced-out leader sets between its dots nothing.
-fn leader_dots(chars: impl Iterator<Item = char>) -> usize {
+/// Whether a run of characters starts with a dot leader: four dots or more -- periods count one,
+/// the ellipsis character three -- or three periods spaced out. A long title leaves room for
+/// only a few dots, and a spaced-out `. . .` is the leader's own form: the ellipsis of prose is
+/// set solid (`...`, `…`).
+fn starts_with_leader(chars: impl Iterator<Item = char>) -> bool {
     let mut dots = 0;
+    let mut spaced = false;
+    let mut gap = false;
     for c in chars {
         match c {
-            '.' => dots += 1,
+            '.' => {
+                spaced |= gap && dots > 0;
+                gap = false;
+                dots += 1;
+            }
             '…' => dots += 3,
-            ' ' | '\u{a0}' => {}
+            ' ' | '\u{a0}' => gap = true,
             _ => break,
         }
     }
-    dots
+    dots >= 4 || (dots >= 3 && spaced)
 }
 
 /// A table cell's text without a dot leader at either end.
@@ -2108,10 +2116,13 @@ fn leader_dots(chars: impl Iterator<Item = char>) -> usize {
 /// A contents page read as a table puts each entry's leader at the edge of its title cell or its
 /// page cell: on the page the leader joins the two, and in a table the column boundary does that.
 /// Left in, it is fill, like the spaces a cell is padded with. A leader is four dots or more, so
-/// an ellipsis that ends a cell's sentence stays.
+/// an ellipsis that ends a cell's sentence stays -- and a cell that holds nothing but dots keeps
+/// them: with no text for them to lead to or from, they are what the cell says (the `. . .` of a
+/// matrix that continues).
 pub(crate) fn trim_leaders(text: &str) -> &str {
-    let mut text = text.trim();
-    if leader_dots(text.chars().rev()) >= 4 {
+    let whole = text.trim();
+    let mut text = whole;
+    if starts_with_leader(text.chars().rev()) {
         let cut = text
             .char_indices()
             .rev()
@@ -2119,14 +2130,18 @@ pub(crate) fn trim_leaders(text: &str) -> &str {
             .map_or(0, |(i, c)| i + c.len_utf8());
         text = text[..cut].trim_end();
     }
-    if leader_dots(text.chars()) >= 4 {
+    if starts_with_leader(text.chars()) {
         let cut = text
             .char_indices()
             .find(|&(_, c)| !matches!(c, '.' | '…' | ' ' | '\u{a0}'))
             .map_or(text.len(), |(i, _)| i);
         text = text[cut..].trim_start();
     }
-    text
+    if text.is_empty() {
+        whole
+    } else {
+        text
+    }
 }
 
 /// Filter out header/footer text spans (page numbers, running headers).
@@ -4075,6 +4090,8 @@ mod tests {
             "CellularBiology……………………………………32",
             "Appendix A .....................................XII",
             " .................. 33",
+            // A long title leaves room for three spaced-out dots.
+            "6.2 Resolution of Difficulties [A1] and [B1] . . . 23",
         ] {
             assert!(ends_a_contents_entry(entry), "{entry}");
         }
@@ -4084,8 +4101,11 @@ mod tests {
             // A number at the end of prose is not a page reference.
             "The sample was heated to 120",
             "as shown in Table 3",
-            // An ellipsis in prose is three dots, not a leader.
+            // An ellipsis in prose is three dots set solid, not a leader.
             "and so on... 12",
+            "and so on … 12",
+            // Two spaced dots are not yet a leader.
+            "see . . 12",
             // A leader with nothing after it ends no entry yet.
             "Cellular Microscopy ...................",
             // Not a numeral: mixed-case roman letters, or a year-sized run of digits past four.
@@ -4104,7 +4124,10 @@ mod tests {
         );
         assert_eq!(trim_leaders(". . . . . . 21"), "21");
         assert_eq!(trim_leaders("Results…………"), "Results");
-        assert_eq!(trim_leaders("  ....... "), "");
+        assert_eq!(trim_leaders("Difficulties [B1] . . ."), "Difficulties [B1]");
+        // A cell of dots alone is its own content.
+        assert_eq!(trim_leaders("  ....... "), ".......");
+        assert_eq!(trim_leaders(". . ."), ". . .");
         // An ellipsis is not a leader, and dots inside the text are the text's own.
         assert_eq!(trim_leaders("and so on..."), "and so on...");
         assert_eq!(trim_leaders("1.2.3.4 Section"), "1.2.3.4 Section");

@@ -14,8 +14,11 @@
 ### Fixed
 
 - Each entry of a table of contents is its own paragraph. Entries set at the body's line pitch
-  were joined into one paragraph; an entry now ends at its page reference (a leader, then a page
-  number or a roman numeral), and an entry wrapped onto a second line stays whole.
+  were joined into one paragraph; an entry now ends at its page reference (a leader — four dots
+  or more, or three spaced out — then a page number or a roman numeral), and an entry wrapped
+  onto a second line stays whole.
+- A contents page read as a table no longer ends its title cells with the dot leader: a leader at
+  either edge of a cell is trimmed, as the column boundary is what joins a title to its page.
 - A table cell padded with trailing spaces to a fixed width is no longer moved into the next
   column when it starts just short of the boundary: how far it runs past the boundary is
   measured to the end of its ink, as the column-text rule already measures it.
