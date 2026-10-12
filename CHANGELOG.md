@@ -9,6 +9,17 @@
   Rust caller's process went with it. Every content operator is now tested with missing and
   mistyped operands, in and out of a text object, through parsing, Markdown and page
   rasterization, and the text after the bad operator still comes out.
+- **Justified columns set close together are read as columns.** Where a run ends in a space,
+  its ink was taken to end a quarter em before its advance does — but a justified line's last
+  space carries the line's word spacing (`Tw`) too, and can be several times that. Lines of a
+  left column then reached into a gutter narrower than that space, and the page was read across
+  both columns. A run's ink now ends where its last inked glyph does, as measured
+  (`TextSpan::ink_width`); the estimate remains for widths that were not measured.
+- **A dash that opens the next line of a broken sentence stays text.** `51 – 99 staff` broken
+  after `51`, or `earns on average –$10,000` broken before the amount, put the dash at the start
+  of a line, and the line became a list item — the dash turned into a bullet and a minus sign
+  was lost. A line opening with a dash continues the sentence when the line before runs to the
+  column's edge and ends without closing a sentence or clause.
 
 ### Changed
 

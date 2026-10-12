@@ -1048,6 +1048,7 @@ mod tests {
             y,
             width: text.len() as f32 * 6.0,
             width_measured: false,
+            ink_width: None,
             font_size: 12.0,
             font_name: "Helvetica".to_string(),
             is_bold: false,
@@ -1112,6 +1113,7 @@ mod tests {
             font_size: 7.0,
             width: 4.0,
             width_measured: true,
+            ink_width: None,
             ..span("*", 84.0, 294.0)
         };
         let spans = vec![span("0.31", 60.0, 290.0), star, span("Next", 160.0, 290.0)];

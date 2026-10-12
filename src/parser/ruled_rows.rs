@@ -399,6 +399,7 @@ mod tests {
             y,
             width: text.len() as f32 * 5.0,
             width_measured: false,
+            ink_width: None,
             font_size: 10.0,
             font_name: "Helvetica".to_string(),
             is_bold: false,

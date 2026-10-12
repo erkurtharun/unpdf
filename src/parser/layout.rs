@@ -27,6 +27,12 @@ pub struct TextSpan {
     /// estimate from the characters and the font size — a plausible box, too coarse to
     /// measure gaps with.
     pub width_measured: bool,
+    /// How far the run's inked glyphs reach from `x`: `width` less the advance of its trailing
+    /// word spaces, as measured — `Tw` and `Tc` included, which can make a justified line's
+    /// last space many times its nominal width. `None` when the widths were not measured, or
+    /// when a trailing space could not be told from a glyph (a space in a multi-byte font is
+    /// not a word space to `Tw`, and is not marked as one).
+    pub ink_width: Option<f32>,
     /// Font size in points
     pub font_size: f32,
     /// Font name (e.g., "Helvetica-Bold")
@@ -47,6 +53,9 @@ impl TextSpan {
     /// spaces to a fixed width (`.009` followed by twenty-eight of them) reaches into the
     /// column after its own.
     pub(crate) fn ink_extent(&self) -> (f32, f32) {
+        if let (true, Some(ink)) = (self.width_measured, self.ink_width) {
+            return (self.x, self.x + ink);
+        }
         let width = if self.width > 0.0 {
             self.width
         } else {
@@ -71,6 +80,7 @@ impl TextSpan {
             y,
             width: 0.0, // Will be calculated later if needed
             width_measured: false,
+            ink_width: None,
             font_size,
             font_name,
             is_bold,
@@ -288,6 +298,14 @@ impl TextLine {
         self.spans
             .iter()
             .map(|s| s.x + s.width)
+            .fold(self.x, f32::max)
+    }
+
+    /// Where the line's ink ends: [`right`](Self::right) without its trailing spaces.
+    fn ink_right(&self) -> f32 {
+        self.spans
+            .iter()
+            .map(|s| s.ink_extent().1)
             .fold(self.x, f32::max)
     }
 
@@ -804,6 +822,24 @@ fn lines_follow_as_body(sizes: &[f32], has_bold: &[bool], i: usize, body_size: f
 fn opens_a_list_item(text: &str) -> bool {
     let text = text.trim_start();
     text.chars().next().is_some_and(is_list_glyph) && !opens_with_signed_number(text)
+}
+
+/// Whether `curr`, which opens with a dash, continues the sentence `prev` was broken in
+/// rather than opening a list item.
+///
+/// A dash is a character as well as a bullet: `51 – 99 staff` broken after `51` puts the en
+/// dash at the start of the next line. Where `prev` runs to the column's edge (`prev_wraps`)
+/// the typesetter broke it there, and where it ends without closing a sentence or clause the
+/// sentence goes on — a list item would start after the sentence that introduces it. Only a
+/// dash is ambiguous; a bullet glyph is never running text.
+fn continues_after_a_wrap(prev: &str, curr: &str, prev_wraps: bool) -> bool {
+    let opens_with_dash = curr
+        .trim_start()
+        .starts_with(['-', '\u{2012}', '\u{2013}', '\u{2014}']);
+    let closes = prev
+        .trim_end()
+        .ends_with(['.', ':', ';', '!', '?', '。', '：']);
+    prev_wraps && opens_with_dash && !closes
 }
 
 /// Whether `text` opens with a number carrying a minus sign: a dash printed against a digit
@@ -1378,6 +1414,10 @@ impl<'a> LayoutAnalyzer<'a> {
                         // space — `None` as soon as one string's glyph widths are unknown.
                         let mut text = String::new();
                         let mut advance: Option<Shift> = Some(Shift::default());
+                        // `advance` as it stood after the last glyph that is not a word space:
+                        // where the run's ink ends. Trailing word spaces and adjustments move
+                        // the text position without inking anything.
+                        let mut ink_advance = Shift::default();
                         // Adjustments before the first string move where the run *starts*, not
                         // how long it is: a TJ that opens with a large offset draws its first
                         // glyph far to the right of the text origin (a right-aligned date, a
@@ -1427,9 +1467,17 @@ impl<'a> LayoutAnalyzer<'a> {
                                             );
                                         }
                                     }
-                                    advance = advance.zip(glyphs).map(|(sum, glyphs)| {
-                                        sum + text_state.params.advance_of(&glyphs)
-                                    });
+                                    match (advance.as_mut(), &glyphs) {
+                                        (Some(sum), Some(glyphs)) => {
+                                            for g in glyphs {
+                                                *sum += text_state.params.glyph_advance(g);
+                                                if !g.is_word_space {
+                                                    ink_advance = *sum;
+                                                }
+                                            }
+                                        }
+                                        _ => advance = None,
+                                    }
                                 }
                                 // TJ adjustments: thousandths of text space, subtracted.
                                 PdfValue::Integer(_) | PdfValue::Real(_) => {
@@ -1464,6 +1512,21 @@ impl<'a> LayoutAnalyzer<'a> {
                         });
                         // A vertical run is as wide as its widest glyph; its length is down the
                         // page, not along the line.
+                        // The ink is known when nothing trails the last inked glyph, or when what
+                        // trails it was measured as word space or adjustment. A run ending in a
+                        // space whose glyph was not a word space (a multi-byte font's) leaves
+                        // `ink_advance` at the run's end: it cannot be told from ink.
+                        let ink_width = advance
+                            .filter(|run| {
+                                !vertical
+                                    && (!text.ends_with(char::is_whitespace) || *run != ink_advance)
+                            })
+                            .map(|_| {
+                                let end = ink_advance + origin;
+                                let (ex, ey) = text_matrix.point(end.tx, rise + end.ty);
+                                let (ex, ey) = apply_ctm(&ctm, ex, ey);
+                                (ex - x).hypot(ey - y)
+                            });
                         let measured_width = if vertical {
                             advance.map(|_| {
                                 let (ex, ey) = text_matrix.point(start.tx + cell, rise + start.ty);
@@ -1500,6 +1563,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             if let Some(width) = measured_width {
                                 span.width = width;
                                 span.width_measured = true;
+                                span.ink_width = ink_width.map(|ink| ink.min(width));
                             }
                             spans.push(span);
                         } else if text.chars().any(char::is_whitespace) {
@@ -1823,6 +1887,12 @@ impl<'a> LayoutAnalyzer<'a> {
             .chain(lines.windows(2).map(|w| (w[0].y - w[1].y).abs()))
             .collect();
         let sizes: Vec<f32> = lines.iter().map(|l| l.font_size).collect();
+        // Where the region's lines end at most: a line whose ink reaches it was broken there by
+        // the typesetter, not by its author.
+        let column_right = lines
+            .iter()
+            .map(TextLine::ink_right)
+            .fold(f32::MIN, f32::max);
 
         for (i, line) in lines.into_iter().enumerate() {
             if i == 0 {
@@ -1834,7 +1904,9 @@ impl<'a> LayoutAnalyzer<'a> {
 
             // Check if this should start a new block
             let local_pitch = local_line_pitch(&spacings, &sizes, i);
-            let should_break = Self::should_break_block(prev_line, &line, avg_spacing, local_pitch);
+            let prev_wraps = column_right - prev_line.ink_right() < prev_line.font_size * FLUSH_EM;
+            let should_break =
+                Self::should_break_block(prev_line, &line, avg_spacing, local_pitch, prev_wraps);
 
             if should_break {
                 // Create block from current lines
@@ -1978,6 +2050,7 @@ impl<'a> LayoutAnalyzer<'a> {
         curr_line: &TextLine,
         avg_spacing: f32,
         local_pitch: Option<f32>,
+        prev_wraps: bool,
     ) -> bool {
         // Heading always starts a new block, UNLESS the previous line is
         // also a heading of the same level sitting close by (within ~2x
@@ -2019,7 +2092,9 @@ impl<'a> LayoutAnalyzer<'a> {
         // own continuation lines (no marker) into the same block. Neither
         // `curr_line` nor `prev_line` can be a heading here (both cases
         // returned above), so a numbered *heading* never reaches this check.
-        if detect_list_marker(&curr_line.text()).is_some() {
+        if detect_list_marker(&curr_line.text()).is_some()
+            && !continues_after_a_wrap(&prev_line.text(), &curr_line.text(), prev_wraps)
+        {
             return true;
         }
 
@@ -2998,6 +3073,8 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
             if prev.width > 0.0 && span.width > 0.0 && abuts(prev, &span) {
                 prev.width = prev.width.max(span.x + span.width - prev.x);
                 prev.width_measured &= span.width_measured;
+                // The ink now ends where the later run's does.
+                prev.ink_width = span.ink_width.map(|ink| span.x + ink - prev.x);
                 prev.text.push_str(&span.text);
                 continue;
             }
@@ -3050,6 +3127,7 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
             let new_end = span.x + span.font_size * 0.6 * span.text.chars().count() as f32;
             prev.width = new_end - prev.x;
             prev.width_measured = false;
+            prev.ink_width = None;
             prev.text.push_str(&span.text);
 
             // A merged fragment that now ends in a word space is a completed word:
@@ -3135,6 +3213,27 @@ mod tests {
     }
 
     #[test]
+    fn a_dash_continues_a_wrapped_sentence_and_opens_an_item_otherwise() {
+        let en = "\u{2013} 99 staff are medium.";
+        assert!(continues_after_a_wrap("and those with 51", en, true));
+        // The sentence before closed: the dash opens an item.
+        for closed in ["the sizes are:", "as follows.", "in three groups;"] {
+            assert!(
+                !continues_after_a_wrap(closed, "- small firms", true),
+                "{closed}"
+            );
+        }
+        // The line before ended short of the edge: its author broke it.
+        assert!(!continues_after_a_wrap("and those with 51", en, false));
+        // A bullet glyph is never running text.
+        assert!(!continues_after_a_wrap(
+            "and those with",
+            "\u{2022} small firms",
+            true
+        ));
+    }
+
+    #[test]
     fn ink_extent_leaves_out_trailing_spaces() {
         let mut padded = TextSpan::new(
             format!(".009{}", " ".repeat(28)),
@@ -3183,6 +3282,7 @@ mod tests {
                 .map(|&(text, x, y, size)| TextSpan {
                     width: estimate_text_width(text, size),
                     width_measured: false,
+                    ink_width: None,
                     ..TextSpan::new(text.to_string(), x, y, size, "Helvetica".to_string())
                 })
                 .collect(),
@@ -3999,6 +4099,7 @@ mod tests {
                 y: 500.0,
                 width: 0.0, // width=0 is the fragmentation signal
                 width_measured: false,
+                ink_width: None,
                 font_size: 12.0,
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
@@ -4021,6 +4122,7 @@ mod tests {
                 y: 500.0,
                 width: 30.0,
                 width_measured: true,
+                ink_width: None,
                 font_size: 12.0,
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
@@ -4032,6 +4134,7 @@ mod tests {
                 y: 500.0,
                 width: 30.0,
                 width_measured: true,
+                ink_width: None,
                 font_size: 12.0,
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
@@ -4100,6 +4203,7 @@ mod tests {
         TextSpan {
             width,
             width_measured: true,
+            ink_width: None,
             ..TextSpan::new(text.to_string(), x, 500.0, 12.0, "Helvetica".to_string())
         }
     }
@@ -4204,6 +4308,7 @@ mod tests {
         let run = |text: &str, x: f32, y: f32, width: f32| TextSpan {
             width,
             width_measured: true,
+            ink_width: None,
             ..TextSpan::new(text.to_string(), x, y, 9.3, "Body".to_string())
         };
         let mut spans = vec![
@@ -4226,6 +4331,7 @@ mod tests {
         TextSpan {
             width: estimate_text_width(text, size),
             width_measured: true,
+            ink_width: None,
             ..TextSpan::new(text.to_string(), x, y, size, "Body".to_string())
         }
     }

@@ -1143,6 +1143,7 @@ mod tests {
                     let span = TextSpan {
                         width: w,
                         width_measured: true,
+                        ink_width: None,
                         ..TextSpan::new(
                             word.to_string(),
                             x,
@@ -1225,6 +1226,7 @@ mod tests {
             TextLine::from_spans(vec![TextSpan {
                 width: 212.0,
                 width_measured: true,
+                ink_width: None,
                 ..TextSpan::new(
                     text.to_string(),
                     72.0,
@@ -1316,6 +1318,7 @@ mod tests {
         TextSpan {
             width,
             width_measured: true,
+            ink_width: None,
             ..TextSpan::new(text.to_string(), x, 500.0, 12.0, "Helvetica".into())
         }
     }

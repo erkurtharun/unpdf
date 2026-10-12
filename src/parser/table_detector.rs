@@ -1890,6 +1890,8 @@ fn fold_marks(text: &mut TableRowData, script: TableRowData) {
             base.text.push_str(mark.text.trim());
             base.width = (mark.x + mark.width).max(base.x + base.width) - base.x;
             base.width_measured &= mark.width_measured;
+            let base_ink = base.ink_extent().1;
+            base.ink_width = Some(base_ink.max(mark.ink_extent().1) - base.x);
         }
     }
 }
@@ -1917,6 +1919,7 @@ mod tests {
             y,
             width: text.len() as f32 * 6.0, // Approximate width
             width_measured: false,
+            ink_width: None,
             font_size: 12.0,
             font_name: "Helvetica".to_string(),
             is_bold: false,
@@ -2272,6 +2275,7 @@ mod tests {
             y,
             width: 0.0,
             width_measured: false,
+            ink_width: None,
             font_size,
             font_name: "Helvetica".to_string(),
             is_bold: false,
@@ -2283,6 +2287,7 @@ mod tests {
         TextSpan {
             width,
             width_measured: true,
+            ink_width: None,
             ..make_span_w(text, x, y, 12.0)
         }
     }
@@ -2659,6 +2664,7 @@ mod tests {
         let sized = |text: &str, x: f32, y: f32, width: f32, size: f32| TextSpan {
             width,
             width_measured: true,
+            ink_width: None,
             ..make_span_w(text, x, y, size)
         };
         let mut spans = vec![
