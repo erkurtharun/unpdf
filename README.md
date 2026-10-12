@@ -1262,7 +1262,7 @@ cargo add unpdf --features ffi,async
 ## Benchmarks
 
 <!-- benchmarks:start -->
-On [opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench) (200 PDFs, official evaluator), unpdf 0.38.0 scores **0.883** overall (NID 0.914 · TEDS 0.859 · MHS 0.807), rank 5 of 20 engine runs compared (the benchmark's own runs plus engines re-measured here), at 19.1 ms per page (AMD Ryzen 5 3500U with Radeon Vega Mobile Gfx (8 threads)). Details, speed against the engines measured on the same machine, olmOCR-Bench results and how to reproduce: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+On [opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench) (200 PDFs, official evaluator), unpdf 0.39.0 scores **0.884** overall (NID 0.915 · TEDS 0.870 · MHS 0.807), rank 4 of 20 engine runs compared (the benchmark's own runs plus engines re-measured here), at 18.6 ms per page (AMD Ryzen 5 3500U with Radeon Vega Mobile Gfx (8 threads)). Details, speed against the engines measured on the same machine, olmOCR-Bench results and how to reproduce: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 <!-- benchmarks:end -->
 
 ## Performance
