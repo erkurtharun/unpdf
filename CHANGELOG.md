@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Removed
+
+- **Breaking: `RenderOptions::image_dir`, `RenderOptions::with_image_dir` and
+  `Unpdf::with_image_dir`.** Documented as the directory extracted images are saved to, the
+  setting was accepted and never acted on: rendering writes no files, so a caller following the
+  crate's own example got Markdown whose image links pointed at nothing. Extracted images are
+  `Document::resources()` (with `ParseOptions::with_resources(true)`), for the caller to write
+  where it wants; the CLI's `--image-dir` is unchanged.
+
 ### Fixed
 
 - **Two columns set close together are read as two columns.** A gutter had to be at least as

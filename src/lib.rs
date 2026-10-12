@@ -297,7 +297,6 @@ pub fn to_json<P: AsRef<Path>>(path: P, format: JsonFormat) -> Result<String> {
 ///
 /// let markdown = Unpdf::new()
 ///     .with_images(true)
-///     .with_image_dir("./images")
 ///     .with_frontmatter()
 ///     .lenient()
 ///     .parse("document.pdf")?
@@ -333,12 +332,6 @@ impl Unpdf {
     /// Enable image extraction.
     pub fn with_images(mut self, extract: bool) -> Self {
         self.parse_options = self.parse_options.with_resources(extract);
-        self
-    }
-
-    /// Set image output directory.
-    pub fn with_image_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
-        self.render_options = self.render_options.with_image_dir(dir);
         self
     }
 
@@ -593,13 +586,6 @@ mod tests {
     fn test_render_options_defaults() {
         let options = RenderOptions::default();
         assert!(!options.include_frontmatter);
-    }
-
-    #[test]
-    fn test_render_options_with_image_dir() {
-        use std::path::PathBuf;
-        let options = RenderOptions::new().with_image_dir("./images");
-        assert_eq!(options.image_dir, Some(PathBuf::from("./images")));
     }
 
     #[test]

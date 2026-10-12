@@ -2,14 +2,10 @@
 
 use super::CleanupOptions;
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
 
 /// Options for rendering document content.
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
-    /// Directory to save extracted images
-    pub image_dir: Option<PathBuf>,
-
     /// Prefix for image paths in output (e.g., "./images/")
     pub image_path_prefix: String,
 
@@ -67,12 +63,6 @@ impl RenderOptions {
     /// Create new render options with defaults.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Set the image directory.
-    pub fn with_image_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.image_dir = Some(dir.into());
-        self
     }
 
     /// Set the image path prefix.
@@ -195,7 +185,6 @@ impl RenderOptions {
 impl Default for RenderOptions {
     fn default() -> Self {
         Self {
-            image_dir: None,
             image_path_prefix: String::new(),
             table_fallback: TableFallback::Markdown,
             max_heading_level: 6,
