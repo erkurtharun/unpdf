@@ -175,13 +175,11 @@ impl RawDocument {
             }
         };
 
-        // R2-R4 only: RC4 and AES-128. AES-256 (AESV3, revisions 5 and 6) is not implemented.
-        //
-        // Reported as `UnsupportedVersion` rather than the catch-all: this is exactly the case
-        // that discriminant names, it is already public on all three binding surfaces, and a
-        // caller meeting an AES-256 document otherwise cannot tell "this build does not do that
-        // yet" apart from any other failure.
-        if params.revision > 4 || params.revision < 2 {
+        // R2-R4 (RC4, AES-128) and R5-R6 (AES-256). Anything else is reported as
+        // `UnsupportedVersion` rather than the catch-all: this is exactly the case that
+        // discriminant names, and a caller meeting such a document otherwise cannot tell "this
+        // build does not do that" apart from any other failure.
+        if !(2..=6).contains(&params.revision) {
             return Err(Error::UnsupportedVersion(format!(
                 "encryption revision {}",
                 params.revision
@@ -192,13 +190,21 @@ impl RawDocument {
         // the caller supplied. Order does not change the outcome -- whichever authenticates
         // yields the same file key for the same document -- but it keeps every document that
         // opened before opening exactly as it did.
-        let key = match crypt::authenticate_user_password(&params, b"") {
+        let authenticate = |password: &[u8]| {
+            if params.revision >= 5 {
+                crypt::authenticate_aes256(&params, password)
+            } else {
+                crypt::authenticate_user_password(&params, password)
+            }
+        };
+        let key = match authenticate(b"") {
             Some(key) => key,
             None => match password.filter(|p| !p.is_empty()) {
                 // A password was offered and neither it nor the empty one worked. Saying
                 // `Encrypted` here would tell the caller to find a password they already gave.
-                Some(supplied) => crypt::authenticate_user_password(&params, supplied.as_bytes())
-                    .ok_or(Error::InvalidPassword)?,
+                Some(supplied) => {
+                    authenticate(supplied.as_bytes()).ok_or(Error::InvalidPassword)?
+                }
                 None => return Err(Error::Encrypted),
             },
         };
@@ -225,18 +231,22 @@ impl RawDocument {
                 continue;
             }
 
-            let obj_key = crypt::object_key(file_key, obj_num, gen_num, params.use_aes);
+            let obj_key = crypt::object_key(file_key, obj_num, gen_num, params.cipher);
 
             if let Some(obj) = self.objects.get_mut(&(obj_num, gen_num)) {
-                decrypt_object(obj, &obj_key, params.use_aes);
+                decrypt_object(obj, &obj_key, params.cipher);
             }
         }
     }
 
     /// Parse encryption parameters from the trailer /Encrypt dictionary.
     fn encryption_params(&self) -> Option<EncryptionParams> {
-        let encrypt_ref = dict_get(&self.trailer, b"Encrypt")?.as_reference()?;
-        let encrypt_dict = self.get_dict(encrypt_ref).ok()?;
+        // A reference to the dictionary, or the dictionary itself written into the trailer
+        // (MuPDF writes it there).
+        let encrypt_dict = match dict_get(&self.trailer, b"Encrypt")? {
+            PdfObject::Dict(dict) => dict,
+            other => self.get_dict(other.as_reference()?).ok()?,
+        };
 
         let v = dict_get(encrypt_dict, b"V")
             .and_then(|o| o.as_i64())
@@ -271,8 +281,13 @@ impl RawDocument {
             .map(|o| !matches!(o, crate::parser::raw::tokenizer::PdfObject::Bool(false)))
             .unwrap_or(true);
 
-        // Detect AES usage: R4 with /StmF or /StrF = /AESV2
-        let use_aes = if r >= 4 {
+        // The cipher: the crypt filter `/StmF` (or `/StrF`) names, for R4 and up.
+        let cipher_of = |cfm: &[u8]| match cfm {
+            b"AESV3" => crypt::Cipher::Aes256,
+            b"AESV2" => crypt::Cipher::Aes128,
+            _ => crypt::Cipher::Rc4,
+        };
+        let cipher = if r >= 4 {
             let cf = dict_get(encrypt_dict, b"CF").and_then(|o| o.as_dict());
             let stmf = dict_get(encrypt_dict, b"StmF").and_then(|o| o.as_name());
             let strf = dict_get(encrypt_dict, b"StrF").and_then(|o| o.as_name());
@@ -284,13 +299,22 @@ impl RawDocument {
                     .and_then(|o| o.as_dict())
                     .and_then(|d| dict_get(d, b"CFM"))
                     .and_then(|o| o.as_name())
-                    .map(|n| n == b"AESV2")
-                    .unwrap_or(false)
+                    .map(cipher_of)
+                    .unwrap_or(crypt::Cipher::Rc4)
+            } else if r >= 5 {
+                // R5-R6 define no cipher but AES-256.
+                crypt::Cipher::Aes256
             } else {
-                false
+                crypt::Cipher::Rc4
             }
         } else {
-            false
+            crypt::Cipher::Rc4
+        };
+        let bytes_of = |key: &[u8]| {
+            dict_get(encrypt_dict, key)
+                .and_then(|o| o.as_str_bytes())
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default()
         };
 
         Some(EncryptionParams {
@@ -301,7 +325,9 @@ impl RawDocument {
             user_hash: u,
             permissions: p,
             file_id,
-            use_aes,
+            cipher,
+            owner_key: bytes_of(b"OE"),
+            user_key: bytes_of(b"UE"),
             encrypt_metadata,
         })
     }
@@ -463,34 +489,30 @@ impl RawDocument {
 }
 
 /// Recursively decrypt strings and streams within a PDF object.
-fn decrypt_object(obj: &mut PdfObject, key: &[u8], use_aes: bool) {
+fn decrypt_object(obj: &mut PdfObject, key: &[u8], cipher: crypt::Cipher) {
+    let decrypt = |data: &[u8]| match cipher {
+        crypt::Cipher::Rc4 => Some(crypt::decrypt_rc4(key, data)),
+        crypt::Cipher::Aes128 | crypt::Cipher::Aes256 => crypt::decrypt_aes(key, data),
+    };
     match obj {
         PdfObject::Str(data) => {
-            if use_aes {
-                if let Some(decrypted) = crypt::decrypt_aes128(key, data) {
-                    *data = decrypted;
-                }
-            } else {
-                *data = crypt::decrypt_rc4(key, data);
+            if let Some(decrypted) = decrypt(data) {
+                *data = decrypted;
             }
         }
         PdfObject::Stream(stream) => {
-            if use_aes {
-                if let Some(decrypted) = crypt::decrypt_aes128(key, &stream.raw_data) {
-                    stream.raw_data = decrypted;
-                }
-            } else {
-                stream.raw_data = crypt::decrypt_rc4(key, &stream.raw_data);
+            if let Some(decrypted) = decrypt(&stream.raw_data) {
+                stream.raw_data = decrypted;
             }
         }
         PdfObject::Array(arr) => {
             for item in arr.iter_mut() {
-                decrypt_object(item, key, use_aes);
+                decrypt_object(item, key, cipher);
             }
         }
         PdfObject::Dict(dict) => {
             for val in dict.values_mut() {
-                decrypt_object(val, key, use_aes);
+                decrypt_object(val, key, cipher);
             }
         }
         _ => {}
@@ -724,15 +746,15 @@ mod tests {
 
     #[test]
     fn an_encryption_revision_this_build_cannot_do_is_refused_by_kind() {
-        // AES-256 (AESV3) is revision 5 or 6. Refusing it is correct -- what matters to a
-        // caller is that the refusal is distinguishable, since the catch-all kind would make
-        // "this build does not implement that" look like any other failure.
+        // The standard security handler stops at revision 6. A later one is refused, and what
+        // matters to a caller is that the refusal is distinguishable, since the catch-all kind
+        // would make "this build does not implement that" look like any other failure.
         let bytes = pdf(
             vec![
                 b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
                 b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
                 b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>".to_vec(),
-                b"<</Filter/Standard/V 5/R 6/Length 256/P -1/O<00>/U<00>>>".to_vec(),
+                b"<</Filter/Standard/V 5/R 7/Length 256/P -1/O<00>/U<00>>>".to_vec(),
             ],
             1,
         );
@@ -743,7 +765,7 @@ mod tests {
             .into_bytes();
 
         let Err(err) = RawDocument::load(&encrypted) else {
-            panic!("revision 6 is not implemented, so loading must not succeed");
+            panic!("revision 7 does not exist, so loading must not succeed");
         };
         assert_eq!(
             err.kind(),

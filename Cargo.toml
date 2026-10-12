@@ -63,6 +63,8 @@ crc32fast = "1.5"  # PNG chunk CRCs when re-encoding FlateDecode images
 # PDF decryption
 rc4 = "0.2"
 md-5 = "0.11"
+# The password hashes of AES-256 encryption (revisions 5 and 6).
+sha2 = "0.11"
 aes = "0.9"
 cbc = "0.2"
 

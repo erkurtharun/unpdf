@@ -15,8 +15,19 @@
   randomly damaged copies of four documents, 196 failed to open before and 25 do now; those 25
   lost the object stream holding their catalog and page tree.
 
+- **AES-256 encrypted documents open** — the standard security handler's revision 6 (ISO
+  32000-2, the encryption of PDF 2.0 and Acrobat's default) and revision 5. They used to be
+  refused as `UnsupportedVersion`. Both the user and the owner password open them; the empty
+  user password is tried first, as before.
+
 ### Fixed
 
+- **An encryption dictionary written into the trailer is read.** `/Encrypt` may be the
+  dictionary itself rather than a reference to it — MuPDF writes it that way — and such a
+  document was refused as having an unparsable encryption dictionary, at every revision.
+- **An encryption dictionary whose `/Length` is outside 40–128 bits no longer panics.** A zero
+  length made RC4 refuse an empty key with a panic, and a length past 128 bits sliced past the
+  hash; such a document now simply fails to authenticate.
 - **A cross-reference chain whose `/Prev` leads back to a section already read no longer loops
   forever.**
 

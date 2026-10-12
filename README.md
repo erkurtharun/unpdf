@@ -8,12 +8,13 @@
 [![CI](https://github.com/iyulab/unpdf/actions/workflows/ci.yml/badge.svg)](https://github.com/iyulab/unpdf/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance Rust library for extracting content from PDF documents to structured Markdown, plain text, and JSON.
+A Rust library for extracting content from PDF documents to structured Markdown, plain text, and JSON — pure Rust, with no native PDF engine to install. How fast and how accurate, measured against other engines on public benchmarks: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Features
 
 - **Comprehensive PDF support**: PDF 1.0-2.0, including compressed object streams
-- **Encrypted PDF support**: RC4 and AES-128 decryption (auto-tries empty password)
+- **Encrypted PDF support**: RC4, AES-128 and AES-256 (standard security handler revisions 2–6; auto-tries the empty password)
+- **Damaged files**: a cross-reference table that cannot be used (a truncated download, wrong offsets) is rebuilt from the objects in the file, and reported
 - **Multiple output formats**: Markdown, Plain Text, JSON (with full metadata)
 - **Structure preservation**: Headings, paragraphs, lists, tables, inline formatting
 - **CJK text support**: Adobe CMap resources; a paragraph's lines join without a space inside a
@@ -719,6 +720,7 @@ if q.pages_incomplete {
 | `declared_page_count` | Page count the document declares (`/Count`), or `None` if that was unreadable too. |
 | `unresolved_page_nodes` | Unreadable page-tree *nodes*. Non-zero means incomplete — **not** a count of lost pages. |
 | `skipped_object_count` | Objects that could not be loaded. Most cost no page (fonts, annotations), so this alone does not imply missing text. |
+| `xref_reconstructed` | The cross-reference table could not be used (a truncated file, wrong offsets, a damaged cross-reference stream) and was rebuilt from the objects in the file. What was read is what the file holds; compare `declared_page_count` with the pages extracted. |
 | `suppressed_text_runs` | Text runs the font decoder could not read and discarded. Non-zero means text is missing from an otherwise successful extraction. |
 | `undecodable_content_streams` | Page content streams that could not be decoded. Lenient parsing leaves them out and keeps the rest of the page — an empty page when it was the page's only stream — so non-zero means content is missing. Strict parsing fails instead. |
 | `unsupported_image_count` | Embedded images recognized as image XObjects but not extractable (unsupported color space/bit depth), so dropped. Distinguishes "no image" from "image present but couldn't be extracted". |
@@ -1233,7 +1235,8 @@ Complete document structure with metadata:
 | Cross-reference streams (XRef streams) | Supported |
 | Linearized PDFs | Supported |
 | Encrypted PDFs (RC4, AES-128 — revisions 2-4) | Supported |
-| Encrypted PDFs (AES-256 — AESV3, revisions 5-6) | Not supported — refused as `ErrorKind::UnsupportedVersion` |
+| Encrypted PDFs (AES-256 — AESV3, revisions 5-6) | Supported |
+| Damaged cross-reference tables | Rebuilt from the file's objects (`xref_reconstructed` in the extraction quality) |
 | Text extraction | Supported |
 | CJK text (Korean, Chinese, Japanese) | Supported (Adobe CMap) |
 | RTL text (Arabic, Hebrew) | Supported (BiDi) |
@@ -1245,7 +1248,6 @@ Complete document structure with metadata:
 | Image extraction (JPEG, JP2) | Supported |
 | Bookmarks/Outlines | Supported |
 | Extraction quality diagnostics | Supported |
-| AES-256 encryption (R5-R6) | Not yet supported |
 | Digital signatures | Metadata only |
 | OCR (image-based PDFs) | Planned |
 

@@ -1,10 +1,22 @@
-//! PDF decryption support (Standard Security Handler, R2-R4).
+//! PDF decryption support (Standard Security Handler, R2-R6).
 //!
 //! Implements password verification and key derivation per the PDF spec,
-//! plus per-object decryption using RC4 or AES-128-CBC.
+//! plus per-object decryption using RC4, AES-128-CBC or AES-256-CBC.
 
 use md5::{Digest, Md5};
 use rc4::{KeyInit, Rc4, StreamCipher};
+use sha2::{Sha256, Sha384, Sha512};
+
+/// How a document's strings and streams are encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cipher {
+    /// RC4 with a per-object key (R2-R4, `/V` 1-2, or crypt filter `/V2`).
+    Rc4,
+    /// AES-128-CBC with a per-object key (R4, crypt filter `/AESV2`).
+    Aes128,
+    /// AES-256-CBC with the file key itself (R5-R6, crypt filter `/AESV3`).
+    Aes256,
+}
 
 /// PDF encryption parameters parsed from the /Encrypt dictionary.
 #[derive(Debug, Clone)]
@@ -23,8 +35,12 @@ pub struct EncryptionParams {
     pub permissions: i32,
     /// First element of trailer /ID array.
     pub file_id: Vec<u8>,
-    /// Whether to use AES (true for R4 with /StmF or /StrF = /AESV2).
-    pub use_aes: bool,
+    /// How strings and streams are encrypted.
+    pub cipher: Cipher,
+    /// /OE — the file key encrypted with a key from the owner password (R5-R6, 32 bytes).
+    pub owner_key: Vec<u8>,
+    /// /UE — the file key encrypted with a key from the user password (R5-R6, 32 bytes).
+    pub user_key: Vec<u8>,
     /// Whether document metadata is encrypted (/EncryptMetadata, default true).
     pub encrypt_metadata: bool,
 }
@@ -38,7 +54,10 @@ const PADDING: [u8; 32] = [
 /// Derive the file encryption key from a user password (Algorithm 2, PDF spec).
 /// Works for Standard Security Handler R2-R4.
 pub fn compute_encryption_key(params: &EncryptionParams, password: &[u8]) -> Vec<u8> {
-    let key_len = (params.key_length / 8) as usize;
+    // 40 to 128 bits (ISO 32000-1, Table 21). `/Length` is the document's word: outside that
+    // range a zero-length key would make RC4 refuse it, and more than the 16 bytes MD5 gives
+    // would slice past the hash.
+    let key_len = (params.key_length / 8).clamp(5, 16) as usize;
 
     // Step a: Pad or truncate password to exactly 32 bytes
     let mut padded = Vec::with_capacity(32);
@@ -113,19 +132,128 @@ pub fn authenticate_user_password(params: &EncryptionParams, password: &[u8]) ->
     None
 }
 
-/// RC4 encrypt/decrypt (symmetric operation).
+/// RC4 encrypt/decrypt (symmetric operation). A key RC4 cannot take leaves the data as it is.
 fn rc4_crypt(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut cipher = Rc4::new_from_slice(key).expect("RC4 key length 1-256");
     let mut output = data.to_vec();
-    cipher.apply_keystream(&mut output);
+    if let Ok(mut cipher) = Rc4::new_from_slice(key) {
+        cipher.apply_keystream(&mut output);
+    }
     output
+}
+
+/// Authenticate `password` against a revision 5 or 6 document and return its file key
+/// (ISO 32000-2, Algorithm 2.A): as the user password, then as the owner password.
+///
+/// The password is taken as UTF-8 bytes, at most 127 of them; the SASLprep normalization the
+/// standard asks for is not applied, which matters only for passwords outside ASCII that
+/// normalization would change.
+pub fn authenticate_aes256(params: &EncryptionParams, password: &[u8]) -> Option<Vec<u8>> {
+    let password = &password[..password.len().min(127)];
+    let (u, o) = (&params.user_hash, &params.owner_hash);
+    if u.len() < 48 || o.len() < 48 || params.user_key.len() < 32 || params.owner_key.len() < 32 {
+        return None;
+    }
+    let hash = |salt: &[u8], udata: &[u8]| hardened_hash(params.revision, password, salt, udata);
+    // User: /U is hash ‖ validation salt ‖ key salt, with no user data.
+    if hash(&u[32..40], &[]) == u[..32] {
+        return aes256_unwrap(&hash(&u[40..48], &[]), &params.user_key[..32]);
+    }
+    // Owner: the same over /O, with the 48 bytes of /U as user data.
+    if hash(&o[32..40], &u[..48]) == o[..32] {
+        return aes256_unwrap(&hash(&o[40..48], &u[..48]), &params.owner_key[..32]);
+    }
+    None
+}
+
+/// The password hash of revision 5 (SHA-256 of password ‖ salt ‖ user data) and revision 6
+/// (ISO 32000-2, Algorithm 2.B — rounds of AES-128-CBC and SHA-2 until the last byte of the
+/// round's output allows a stop, at least 64 rounds).
+fn hardened_hash(revision: u32, password: &[u8], salt: &[u8], udata: &[u8]) -> [u8; 32] {
+    let mut k: Vec<u8> = Sha256::new()
+        .chain_update(password)
+        .chain_update(salt)
+        .chain_update(udata)
+        .finalize()
+        .to_vec();
+    if revision == 6 {
+        let mut round = 0u32;
+        loop {
+            let mut k1 = Vec::with_capacity(64 * (password.len() + k.len() + udata.len()));
+            for _ in 0..64 {
+                k1.extend_from_slice(password);
+                k1.extend_from_slice(&k);
+                k1.extend_from_slice(udata);
+            }
+            let e = aes128_cbc_encrypt(&k[..16], &k[16..32], &k1);
+            // The first 16 bytes of E as a big-endian number, modulo 3: since 256 ≡ 1 (mod 3),
+            // that is the sum of the bytes modulo 3.
+            let selector = e[..16].iter().map(|&b| u32::from(b)).sum::<u32>() % 3;
+            k = match selector {
+                0 => Sha256::digest(&e).to_vec(),
+                1 => Sha384::digest(&e).to_vec(),
+                _ => Sha512::digest(&e).to_vec(),
+            };
+            round += 1;
+            let last = u32::from(*e.last().unwrap_or(&0));
+            if round >= 64 && last <= round - 32 {
+                break;
+            }
+        }
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&k[..32]);
+    out
+}
+
+/// AES-128-CBC encryption without padding; `data` is a whole number of blocks (Algorithm
+/// 2.B builds it as 64 repetitions of a block-aligned sequence).
+fn aes128_cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Vec<u8> {
+    use aes::cipher::{BlockCipherEncrypt, KeyInit as _};
+    use aes::Aes128;
+
+    let Ok(cipher) = Aes128::new_from_slice(key) else {
+        return Vec::new();
+    };
+    let mut chain = [0u8; 16];
+    chain.copy_from_slice(&iv[..16]);
+    let mut out = Vec::with_capacity(data.len());
+    for block in data.chunks(16) {
+        let mut buf = [0u8; 16];
+        for (i, b) in block.iter().enumerate() {
+            buf[i] = b ^ chain[i];
+        }
+        let mut arr = buf.into();
+        cipher.encrypt_block(&mut arr);
+        chain.copy_from_slice(&arr);
+        out.extend_from_slice(&chain);
+    }
+    out
+}
+
+/// Decrypt `/UE` or `/OE` (32 bytes) with the 32-byte key derived from a password: AES-256
+/// in CBC mode with a zero IV and no padding.
+fn aes256_unwrap(key: &[u8; 32], wrapped: &[u8]) -> Option<Vec<u8>> {
+    use aes::Aes256;
+    use cbc::cipher::{block_padding, BlockModeDecrypt, KeyIvInit};
+
+    let mut buf = wrapped.to_vec();
+    cbc::Decryptor::<Aes256>::new_from_slices(key, &[0u8; 16])
+        .ok()?
+        .decrypt_padded::<block_padding::NoPadding>(&mut buf)
+        .ok()
+        .map(<[u8]>::to_vec)
 }
 
 /// Compute per-object decryption key (Algorithm 1 from the PDF spec).
 ///
 /// file_key + obj_num (3 LE bytes) + gen_num (2 LE bytes) [+ "sAlT" for AES]
 /// hashed with MD5, truncated to min(file_key.len()+5, 16).
-pub fn object_key(file_key: &[u8], obj_num: u32, gen_num: u16, use_aes: bool) -> Vec<u8> {
+pub fn object_key(file_key: &[u8], obj_num: u32, gen_num: u16, cipher: Cipher) -> Vec<u8> {
+    // AES-256 encrypts every object with the file key itself (ISO 32000-2, 7.6.3.3).
+    if cipher == Cipher::Aes256 {
+        return file_key.to_vec();
+    }
+    let use_aes = cipher == Cipher::Aes128;
     let mut hasher = Md5::new();
     hasher.update(file_key);
     hasher.update(&obj_num.to_le_bytes()[..3]);
@@ -142,6 +270,39 @@ pub fn object_key(file_key: &[u8], obj_num: u32, gen_num: u16, use_aes: bool) ->
 /// Decrypt a byte sequence using RC4.
 pub fn decrypt_rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
     rc4_crypt(key, data)
+}
+
+/// Decrypt a byte sequence using AES-CBC — AES-128 for a 16-byte key, AES-256 for a 32-byte
+/// one. The first 16 bytes of `data` are the IV; the remainder is ciphertext.
+pub fn decrypt_aes(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    if key.len() == 32 {
+        return decrypt_aes256(key, data);
+    }
+    decrypt_aes128(key, data)
+}
+
+fn decrypt_aes256(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    use aes::Aes256;
+    use cbc::cipher::{block_padding, BlockModeDecrypt, KeyIvInit};
+
+    if data.len() < 16 || !data.len().is_multiple_of(16) {
+        return None;
+    }
+    let (iv, ciphertext) = data.split_at(16);
+    if ciphertext.is_empty() {
+        return Some(vec![]);
+    }
+    let decrypt_with = |pkcs7: bool| -> Option<Vec<u8>> {
+        let mut buf = ciphertext.to_vec();
+        let decryptor = cbc::Decryptor::<Aes256>::new_from_slices(key, iv).ok()?;
+        let plaintext = if pkcs7 {
+            decryptor.decrypt_padded::<block_padding::Pkcs7>(&mut buf)
+        } else {
+            decryptor.decrypt_padded::<block_padding::NoPadding>(&mut buf)
+        };
+        plaintext.ok().map(<[u8]>::to_vec)
+    };
+    decrypt_with(true).or_else(|| decrypt_with(false))
 }
 
 /// Decrypt a byte sequence using AES-128-CBC.
@@ -248,9 +409,26 @@ mod tests {
     /// shorter than 11 bytes produces a key AES-128 cannot take. Before the cipher 0.5 migration
     /// this reached a slice-to-array conversion that panics on a length mismatch -- on a path
     /// whose input is an untrusted file.
+    /// `/Length` is the document's word. A zero length made RC4 refuse an empty key with a
+    /// panic; a length past 128 bits sliced past the 16 bytes MD5 gives. Both are untrusted
+    /// input, so both come out as a key that simply does not authenticate.
+    #[test]
+    fn a_key_length_outside_40_to_128_bits_does_not_panic() {
+        for bits in [0, 8, 256, 4096, u32::MAX] {
+            let p = EncryptionParams {
+                key_length: bits,
+                ..params(3, true, vec![0; 32])
+            };
+            let key = compute_encryption_key(&p, b"");
+            assert!((5..=16).contains(&key.len()), "{bits}: {}", key.len());
+            assert!(authenticate_user_password(&p, b"").is_none());
+        }
+        assert_eq!(rc4_crypt(&[], b"abc"), b"abc");
+    }
+
     #[test]
     fn a_key_the_cipher_cannot_take_is_refused_rather_than_panicking() {
-        let short_key = object_key(&[0xAB; 4], 1, 0, true);
+        let short_key = object_key(&[0xAB; 4], 1, 0, Cipher::Aes128);
         assert!(
             short_key.len() < 16,
             "the truncation rule should yield 9 bytes here"
@@ -284,7 +462,9 @@ mod tests {
             user_hash,
             permissions: -3904,
             file_id: (0xA0u8..0xB0).collect(),
-            use_aes: false,
+            cipher: Cipher::Rc4,
+            owner_key: Vec::new(),
+            user_key: Vec::new(),
             encrypt_metadata,
         }
     }
