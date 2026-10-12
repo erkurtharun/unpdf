@@ -2640,19 +2640,7 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
- "tokio-macros",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-macros"
-version = "2.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c55a2eff8b69ce66c84f85e1da1c233edc36ceb85a2058d11b0d6a3c7e7569c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -2808,15 +2796,20 @@ checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "unparser-shared"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2186c81c50a642d840c57e420d4b84d6874e12f4af1d8ca75c38d05f162cd55"
+checksum = "46c2f9a6bf9b703142cf01a01928498bcdd4f6dd2a2cd303155bee991a3fe86d"
 dependencies = [
  "base64 0.23.1",
+ "colored",
  "pulldown-cmark",
  "pulldown-cmark-to-cmark",
+ "self-replace",
+ "self_update",
+ "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "ureq",
 ]
@@ -2864,12 +2857,9 @@ dependencies = [
  "env_logger",
  "indicatif",
  "log",
- "self-replace",
- "self_update",
- "semver",
  "serde_json",
  "tempfile",
- "tokio",
+ "unparser-shared",
  "unpdf",
 ]
 
