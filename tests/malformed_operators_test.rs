@@ -42,14 +42,20 @@ fn an_operator_with_missing_or_mistyped_operands_does_not_panic() {
             }
         }
     }
-    assert!(panicked.is_empty(), "parsing panicked on: {}", panicked.join(", "));
+    assert!(
+        panicked.is_empty(),
+        "parsing panicked on: {}",
+        panicked.join(", ")
+    );
 }
 
 /// Inside a text object, a bad operator is passed over and the text after it is still read —
 /// the page is not given up on.
 #[test]
 fn text_after_an_operator_with_missing_operands_is_still_read() {
-    for operator in ["Tf", "Td", "TD", "Tm", "Tc", "Tw", "Tz", "TL", "Ts", "Tr", "TJ", "Tj"] {
+    for operator in [
+        "Tf", "Td", "TD", "Tm", "Tc", "Tw", "Tz", "TL", "Ts", "Tr", "TJ", "Tj",
+    ] {
         let stream = format!("BT {operator} 72 700 Td /F1 12 Tf (Survives) Tj ET");
         let pdf = page_pdf("", "/MediaBox[0 0 595 842]", stream.as_bytes());
         let doc = unpdf::parse_bytes(&pdf).unwrap_or_else(|e| panic!("`{operator}`: {e}"));
@@ -81,5 +87,9 @@ fn rasterizing_an_operator_with_missing_or_mistyped_operands_does_not_panic() {
             }
         }
     }
-    assert!(panicked.is_empty(), "rasterizing panicked on: {}", panicked.join(", "));
+    assert!(
+        panicked.is_empty(),
+        "rasterizing panicked on: {}",
+        panicked.join(", ")
+    );
 }

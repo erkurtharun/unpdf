@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A `Tf` without operands no longer panics.** The font operator read its operand by index, so
+  a content stream with a bare `Tf` crashed parsing (index out of bounds) — the CLI exited and a
+  Rust caller's process went with it. Every content operator is now tested with missing and
+  mistyped operands, in and out of a text object, through parsing, Markdown and page
+  rasterization, and the text after the bad operator still comes out.
+
+### Changed
+
+- **The CLI checks for a newer release at most once a day, and can be told not to.** Every
+  command used to ask GitHub and wait up to half a second for the answer, and nothing turned it
+  off. The answer is now cached for a day, so the other runs make no request and wait for
+  nothing, and no check is made with `--no-update-check`, with `UNPDF_NO_UPDATE_CHECK=1`
+  or `UNPARSER_NO_UPDATE_CHECK=1` set, in CI (`CI` set), or when stderr is not a terminal.
+  The README states what the CLI sends over the network.
+
 ## 0.41.0 — 2026-10-12
 
 ### Added

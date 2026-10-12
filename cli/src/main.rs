@@ -1,10 +1,10 @@
 //! unpdf CLI - PDF content extraction tool
 
-mod update;
 mod writer;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use unparser_shared::cli_update::{self, Tool, UpdateCheck};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -166,12 +166,27 @@ pub struct ConvertArgs {
     pub quiet: bool,
 }
 
+/// This tool, for the update notice and the `update` command.
+const TOOL: Tool = Tool {
+    repo_owner: "iyulab",
+    repo_name: "unpdf",
+    bin_name: "unpdf",
+    crate_name: "unpdf-cli",
+    current_version: env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
 #[command(name = "unpdf")]
 #[command(author = "iyulab")]
 #[command(version)]
 #[command(about = "Extract PDF content to Markdown, text, and JSON", long_about = None)]
 struct Cli {
+    /// Do not check GitHub for a newer release (also: `UNPDF_NO_UPDATE_CHECK=1`, or
+    /// `UNPARSER_NO_UPDATE_CHECK=1` for every tool of the family). No check is made in CI or
+    /// when stderr is not a terminal either.
+    #[arg(long, global = true)]
+    no_update_check: bool,
+
     /// Input PDF file
     #[arg(value_name = "FILE")]
     input: Option<PathBuf>,
@@ -433,8 +448,8 @@ fn main() {
     let cli = Cli::parse();
 
     // Start background update check (except for update/version commands)
-    let update_rx = if should_check_update(&cli) {
-        Some(update::check_update_async())
+    let update_check = if should_check_update(&cli) {
+        UpdateCheck::start(TOOL, cli.no_update_check)
     } else {
         None
     };
@@ -512,7 +527,7 @@ fn main() {
             tsv,
         }) => cmd_tables(&input, output.as_deref(), pages.as_deref(), tsv, quiet),
         Some(Commands::Update { check, force }) => {
-            if let Err(e) = update::run_update(check, force) {
+            if let Err(e) = cli_update::run_update(&TOOL, check, force) {
                 eprintln!("{}: {}", "Error".red().bold(), e);
                 std::process::exit(1);
             }
@@ -552,10 +567,8 @@ fn main() {
     };
 
     // Check for update result and show notification if available
-    if let Some(rx) = update_rx {
-        if let Some(update_result) = update::try_get_update_result(&rx) {
-            update::print_update_notification(&update_result);
-        }
+    if let Some(check) = update_check {
+        check.finish();
     }
 
     match result {
