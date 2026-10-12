@@ -2,7 +2,6 @@
 
 use std::cmp::{Ord, Ordering, Reverse};
 use std::collections::BinaryHeap;
-use std::path::PathBuf;
 
 use crate::error::Error;
 use crate::model::{ExtractionQuality, FormField, Metadata, Outline, Page};
@@ -54,12 +53,11 @@ pub struct PageStreamOptions {
     pub parallel: bool,
     /// 읽을 수 없는 OCR 텍스트 레이어를 버릴지 여부. `ParseOptions` 참고.
     pub suppress_low_confidence_ocr: bool,
-    /// 동시에 in-flight 상태로 둘 페이지 수의 상한. 기본 cores*2.
+    /// How many pages may be parsing, or parsed and waiting for an earlier page, at once in a
+    /// parallel run -- what bounds memory on a long document whose early page is slow. At least
+    /// 1; default twice the worker threads.
     pub window_size: usize,
     pub emit_progress_every: u32,
-    /// Some 이면 페이지 파싱 직후 리소스(이미지)를 이 디렉토리로 즉시 flush,
-    /// `Document.resources` 에는 적재하지 않음. 대용량 문서 메모리 보호.
-    pub flush_resources_to: Option<PathBuf>,
 }
 
 impl Default for PageStreamOptions {
@@ -78,7 +76,6 @@ impl Default for PageStreamOptions {
             #[cfg(target_arch = "wasm32")]
             window_size: 2,
             emit_progress_every: 16,
-            flush_resources_to: None,
         }
     }
 }
@@ -189,7 +186,6 @@ impl<T> ReorderBuffer<T> {
         self.heap.is_empty()
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.heap.len()
     }
@@ -199,12 +195,79 @@ impl<T> ReorderBuffer<T> {
 // run_stream — rayon+crossbeam streaming pipeline
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::prelude::*;
 use std::ops::ControlFlow;
 
 use super::backend::PdfBackend;
 use super::pdf_parser::{convert_outline_item_pub, parse_pdf_date_pub, parse_single_page};
+
+/// Run `parse` over `pages` on the rayon pool, at most `window` pages at a time, and hand each
+/// result to `receive` on this thread as it arrives.
+///
+/// `receive` answers with how many pages have left the window since its last call -- passed on,
+/// in page order, to whoever consumes them -- or `Break` to stop. A page enters the window when it
+/// is handed to the pool and leaves when it is passed on, so the pages being parsed plus those
+/// parsed and waiting for an earlier one never exceed `window` (at least 1).
+///
+/// Pages are handed out in order, each once a place in the window is free. So the next page the
+/// consumer needs is always one already handed out, and a full window always drains: there is no
+/// order of completion that deadlocks. The dispatcher waits for places on this thread's side, not
+/// on a pool worker, so a pool of one thread runs too.
+///
+/// A panic in `parse` is carried to this thread and resumed here, after the dispatcher is told to
+/// stop -- the page it would have produced is not waited for.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn parse_windowed<R: Send>(
+    pages: &[u32],
+    window: usize,
+    parse: impl Fn(u32) -> R + Sync,
+    mut receive: impl FnMut(u32, R) -> ControlFlow<(), usize>,
+) {
+    let window = window.max(1);
+    let (place_tx, place_rx) = crossbeam_channel::bounded::<()>(window);
+    for _ in 0..window {
+        let _ = place_tx.send(());
+    }
+    let (tx, rx) = crossbeam_channel::unbounded::<(u32, std::thread::Result<R>)>();
+    let parse = &parse;
+
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            rayon::in_place_scope(|pool| {
+                for &page in pages {
+                    if place_rx.recv().is_err() {
+                        break; // the consumer stopped
+                    }
+                    let tx = tx.clone();
+                    pool.spawn(move |_| {
+                        let r =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse(page)));
+                        let _ = tx.send((page, r));
+                    });
+                }
+            });
+        });
+
+        // Owned here, so that leaving this closure -- by finishing, stopping or unwinding --
+        // tells the dispatcher there will be no more places.
+        let place_tx = place_tx;
+        while let Ok((page, r)) = rx.recv() {
+            let r = match r {
+                Ok(r) => r,
+                Err(payload) => std::panic::resume_unwind(payload),
+            };
+            match receive(page, r) {
+                ControlFlow::Continue(left) => {
+                    for _ in 0..left {
+                        let _ = place_tx.send(());
+                    }
+                }
+                ControlFlow::Break(()) => break,
+            }
+        }
+        drop(place_tx);
+        drop(rx);
+    });
+}
 
 /// Sample the first `max_pages` pages of content stream operators to detect
 /// scan-only PDFs. Returns `true` when image (`Do`, `BI`) operators are present but
@@ -388,53 +451,34 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     if effective_parallel {
-        // Use unbounded channel: the ReorderBuffer already limits outstanding pages.
-        // A bounded channel here would deadlock because the consumer (on_event) is
-        // on the current thread and cannot run concurrently with std::thread::scope.
-        let (tx, rx) = crossbeam_channel::unbounded::<(u32, crate::error::Result<Page>)>();
         let parse_opts_ref = &parse_opts;
-        let targets_ref = &targets;
-
-        // Spawn a dedicated OS thread for the producer so the consumer can run on
-        // the current thread concurrently. We use std::thread::scope for lifetime
-        // safety — the scope returns only after the consumer loop has exited AND
-        // the producer thread has finished, but we drop `rx` to unblock the scope
-        // if the consumer exits early.
-        std::thread::scope(|s| {
-            let tx_for_producer = tx;
-            s.spawn(|| {
-                targets_ref
-                    .par_iter()
-                    .for_each_with(tx_for_producer, |tx, &page_num| {
-                        let r = parse_single_page(backend, page_num, parse_opts_ref);
-                        let _ = tx.send((page_num, r));
-                    });
-            });
-
-            // Consumer runs on this (current) thread.
-            while let Ok((page_num, r)) = rx.recv() {
+        parse_windowed(
+            &targets,
+            opts.window_size,
+            |page_num| parse_single_page(backend, page_num, parse_opts_ref),
+            |page_num, r| {
                 let item = match r {
                     Ok(p) => Ok(p),
                     Err(e) => {
                         if opts.error_mode == ErrorMode::Strict {
                             strict_err = Some(e);
                             cancelled = true;
-                            break;
+                            return ControlFlow::Break(());
                         }
                         Err(e)
                     }
                 };
                 reorder.push(page_num, item);
+                let waiting = reorder.len();
                 if let ControlFlow::Break(_) =
                     flush_ready(&mut reorder, &mut quality, &mut progress, &mut on_event)
                 {
                     cancelled = true;
-                    break;
+                    return ControlFlow::Break(());
                 }
-            }
-            // Drop rx here so the producer isn't blocked on send if we broke early.
-            drop(rx);
-        });
+                ControlFlow::Continue(waiting - reorder.len())
+            },
+        );
     }
 
     if !effective_parallel {
@@ -535,5 +579,146 @@ mod reorder_tests {
         assert_eq!(b.try_pop_next(), None);
         b.skip_to_next_present();
         assert_eq!(b.try_pop_next(), Some((5, "e")));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod window_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as Atomic};
+    use std::time::Duration;
+
+    /// A consumer that passes pages on in order, as `run_stream`'s reorder buffer does, and
+    /// counts what has left the window.
+    struct InOrder {
+        waiting: BTreeSet<u32>,
+        next: u32,
+        passed: Vec<u32>,
+    }
+
+    impl InOrder {
+        fn new(first: u32) -> Self {
+            Self {
+                waiting: BTreeSet::new(),
+                next: first,
+                passed: Vec::new(),
+            }
+        }
+
+        fn receive(&mut self, page: u32) -> usize {
+            self.waiting.insert(page);
+            let before = self.passed.len();
+            while self.waiting.remove(&self.next) {
+                self.passed.push(self.next);
+                self.next += 1;
+            }
+            self.passed.len() - before
+        }
+    }
+
+    #[test]
+    fn the_window_holds_while_an_early_page_is_slow() {
+        // Page 1 takes far longer than the rest, so every later page finishes first and waits
+        // for it: without a bound they would all pile up behind it.
+        let window = 4;
+        let entered = AtomicUsize::new(0);
+        let left = AtomicUsize::new(0);
+        let overflow = AtomicBool::new(false);
+        let mut consumer = InOrder::new(1);
+        let pages: Vec<u32> = (1..=40).collect();
+        parse_windowed(
+            &pages,
+            window,
+            |page| {
+                let inside = entered.fetch_add(1, Atomic::SeqCst) + 1 - left.load(Atomic::SeqCst);
+                if inside > window {
+                    overflow.store(true, Atomic::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(if page == 1 { 60 } else { 1 }));
+                page
+            },
+            |_, page| {
+                let n = consumer.receive(page);
+                left.fetch_add(n, Atomic::SeqCst);
+                ControlFlow::Continue(n)
+            },
+        );
+        assert!(
+            !overflow.load(Atomic::SeqCst),
+            "more than {window} pages in flight"
+        );
+        assert_eq!(consumer.passed, pages, "every page, in order");
+    }
+
+    #[test]
+    fn a_window_of_one_parses_a_page_at_a_time() {
+        let entered = AtomicUsize::new(0);
+        let left = AtomicUsize::new(0);
+        let mut consumer = InOrder::new(1);
+        let pages: Vec<u32> = (1..=12).collect();
+        parse_windowed(
+            &pages,
+            0, // read as 1
+            |page| {
+                let inside = entered.fetch_add(1, Atomic::SeqCst) + 1 - left.load(Atomic::SeqCst);
+                assert_eq!(inside, 1);
+                page
+            },
+            |_, page| {
+                let n = consumer.receive(page);
+                left.fetch_add(n, Atomic::SeqCst);
+                ControlFlow::Continue(n)
+            },
+        );
+        assert_eq!(consumer.passed, pages);
+    }
+
+    #[test]
+    fn stopping_parses_no_more_than_a_window_past_it() {
+        let window = 3;
+        let parsed = AtomicUsize::new(0);
+        let mut consumer = InOrder::new(1);
+        let pages: Vec<u32> = (1..=200).collect();
+        parse_windowed(
+            &pages,
+            window,
+            |page| {
+                parsed.fetch_add(1, Atomic::SeqCst);
+                page
+            },
+            |_, page| {
+                let n = consumer.receive(page);
+                if consumer.passed.len() >= 5 {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::Continue(n)
+            },
+        );
+        let parsed = parsed.load(Atomic::SeqCst);
+        assert!(
+            parsed <= 5 + 2 * window,
+            "parsed {parsed} pages after stopping at 5"
+        );
+    }
+
+    #[test]
+    fn a_panicking_page_reaches_the_caller_instead_of_hanging_it() {
+        let pages: Vec<u32> = (1..=30).collect();
+        let result = std::panic::catch_unwind(|| {
+            let mut consumer = InOrder::new(1);
+            parse_windowed(
+                &pages,
+                4,
+                |page| {
+                    if page == 5 {
+                        panic!("page 5");
+                    }
+                    page
+                },
+                |_, page| ControlFlow::Continue(consumer.receive(page)),
+            );
+        });
+        assert!(result.is_err());
     }
 }

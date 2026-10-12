@@ -10,8 +10,16 @@
   crate's own example got Markdown whose image links pointed at nothing. Extracted images are
   `Document::resources()` (with `ParseOptions::with_resources(true)`), for the caller to write
   where it wants; the CLI's `--image-dir` is unchanged.
+- **Breaking: `PageStreamOptions::flush_resources_to`.** Documented as writing each page's
+  images to a directory as soon as it was parsed, it was never implemented, and nothing set it.
 
 ### Fixed
+
+- **`PageStreamOptions::window_size` bounds a parallel run.** It is the most pages that may be
+  parsing, or parsed and waiting for an earlier page, at once, and nothing enforced it: a slow
+  early page let every later page finish and pile up in memory behind it. Pages are now handed
+  out in order as places in the window free up. The CLI's `--window` takes effect for the first
+  time.
 
 - **Two columns set close together are read as two columns.** A gutter had to be at least as
   wide as the body type (and 8 pt) to be found, and the same width decided how far apart two
