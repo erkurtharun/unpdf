@@ -455,7 +455,7 @@ fn column_holding(col_bounds: &[f32], span: &TextSpan) -> Option<usize> {
         return Some(c);
     };
     let before = edge - span.x;
-    let past = (span.x + span.width).min(next_end) - edge;
+    let past = span.ink_extent().1.min(next_end) - edge;
     Some(if before <= span.font_size && past > before {
         c + 1
     } else {
@@ -1232,5 +1232,12 @@ mod tests {
             ..span("A long label", 410.0, 300.0)
         };
         assert_eq!(column_holding(&bounds, &long), Some(1));
+        // Trailing spaces are advance, not ink: a value padded to a fixed width that ends
+        // before the boundary is not past it, however far its spaces run.
+        let padded = TextSpan {
+            width: 8.0 + 20.0 * 3.0,
+            ..span(&format!("12{}", " ".repeat(20)), 440.0, 300.0)
+        };
+        assert_eq!(column_holding(&bounds, &padded), Some(1));
     }
 }

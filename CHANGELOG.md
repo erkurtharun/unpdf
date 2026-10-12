@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A table cell padded with trailing spaces to a fixed width is no longer moved into the next
+  column when it starts just short of the boundary: how far it runs past the boundary is
+  measured to the end of its ink, as the column-text rule already measures it.
+
 ## 0.39.0 — 2026-10-12
 
 ### Added

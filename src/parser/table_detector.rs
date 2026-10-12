@@ -767,7 +767,7 @@ impl TableDetector {
                         if let Some(&edge) = columns.get(start + 1) {
                             let next_end = columns.get(start + 2).copied().unwrap_or(f32::MAX);
                             let before = edge - span.x;
-                            let past = (span.x + span.width).min(next_end) - edge;
+                            let past = span.ink_extent().1.min(next_end) - edge;
                             if before > 0.0 && before <= span.font_size && past > before {
                                 first += 1;
                             }
