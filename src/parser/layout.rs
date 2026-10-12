@@ -1322,7 +1322,7 @@ impl<'a> LayoutAnalyzer<'a> {
                     in_text_block = false;
                 }
                 "Tf" => {
-                    if let PdfValue::Name(font_name) = &op.operands[0] {
+                    if let Some(PdfValue::Name(font_name)) = op.operands.first() {
                         text_state.font_resource = font_name.clone();
                         let fonts = fonts
                             .entry(op.form)
