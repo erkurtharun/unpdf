@@ -11,6 +11,7 @@
 //! strong structural evidence (explicit borders), so it bypasses stream
 //! mode's alignment/occupancy heuristics entirely.
 
+use super::column_text::ColumnText;
 use super::layout::{TextLine, TextSpan};
 use super::table_detector::group_into_rows;
 use super::vector_graphics::GraphicsLine;
@@ -359,14 +360,31 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     let mut cell_spans: Vec<Vec<Vec<TextSpan>>> = vec![vec![Vec::new(); cols]; rows];
     let mut consumed = Vec::new();
 
+    // Each span by the column it starts in (and `column_holding`'s nudge) first, so every
+    // column's text is known; then each span by the column whose text it lies over (see
+    // `ColumnText::column_for`).
+    let mut placed = Vec::new();
+    let mut column_text = ColumnText::new(cols);
     for i in order {
         let span = &spans[i];
-        let (Some(r), Some(c)) = (
+        let (Some(r), Some(start), Some(otherwise)) = (
             bin_index(&grid.row_bounds, span.y),
+            bin_index(&grid.col_bounds, span.x),
             column_holding(&grid.col_bounds, span),
         ) else {
             continue;
         };
+        if !span.text.trim().is_empty() {
+            let (left, right) = span.ink_extent();
+            column_text.add(r, otherwise, left, right);
+        }
+        placed.push((i, r, start, otherwise));
+    }
+    for (i, r, start, otherwise) in placed {
+        let span = &spans[i];
+        let edge = grid.col_bounds.get(start + 1).copied();
+        let (left, right) = span.ink_extent();
+        let c = column_text.column_for(r, start, edge, left, right, otherwise);
         if !span.text.trim().is_empty() {
             cell_spans[r][c].push(span.clone());
         }
@@ -424,8 +442,8 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     Some((table, consumed))
 }
 
-/// The column (index into the columns `col_bounds` bound) that holds `span`: the one it starts
-/// in — unless it starts just short of that column's right boundary, within a font size of it,
+/// The column (index into the columns `col_bounds` bound) that holds `span` when the text of
+/// the other rows gives no answer (see `ColumnText::column_for`): the one it starts in — unless it starts just short of that column's right boundary, within a font size of it,
 /// and more of it lies past the boundary than before it. A row without a rule between two
 /// columns (a header band shaded across both) lets a cell's text start a few points before the
 /// boundary the rows below are ruled at. A span starting further into its column stays there

@@ -37,7 +37,26 @@ pub struct TextSpan {
     pub is_italic: bool,
 }
 
+/// The advance of a space, in multiples of the font size -- what most text faces draw.
+const SPACE_EM: f32 = 0.25;
+
 impl TextSpan {
+    /// Where the run lies in ink, left to right: its trailing spaces are advance, not ink.
+    /// A gap measured to them comes out a space short (a header cell drawn as
+    /// `Added cation ` stood 5 pt from the next one instead of 7), and a run padded with
+    /// spaces to a fixed width (`.009` followed by twenty-eight of them) reaches into the
+    /// column after its own.
+    pub(crate) fn ink_extent(&self) -> (f32, f32) {
+        let width = if self.width > 0.0 {
+            self.width
+        } else {
+            self.text.chars().count() as f32 * self.font_size * 0.5
+        };
+        let trailing = self.text.len() - self.text.trim_end().len();
+        let ink = (width - trailing as f32 * self.font_size * SPACE_EM).max(0.0);
+        (self.x, self.x + ink)
+    }
+
     /// Create a new text span.
     pub fn new(text: String, x: f32, y: f32, font_size: f32, font_name: String) -> Self {
         let is_bold = font_name.to_lowercase().contains("bold")
@@ -3078,6 +3097,23 @@ mod tests {
     }
 
     use super::*;
+
+    /// A run padded with spaces to a fixed width ends where its ink does.
+    #[test]
+    fn ink_extent_leaves_out_trailing_spaces() {
+        let mut padded = TextSpan::new(
+            format!(".009{}", " ".repeat(28)),
+            353.4,
+            0.0,
+            10.0,
+            "F".into(),
+        );
+        padded.width = 18.0 + 28.0 * 2.5;
+        assert_eq!(padded.ink_extent(), (353.4, 353.4 + 18.0));
+        let mut plain = TextSpan::new("Size".into(), 160.0, 0.0, 10.0, "F".into());
+        plain.width = 17.4;
+        assert_eq!(plain.ink_extent(), (160.0, 177.4));
+    }
 
     /// Font statistics for a document whose body text is 12pt.
     fn body_12pt_stats(heading_sizes: &[f32]) -> FontStatistics {

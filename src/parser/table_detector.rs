@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::model::{Table, TableCell, TableRow};
 
+use super::column_text::ColumnText;
 use super::layout::{opens_with_signed_number, should_insert_space_between, TextSpan};
 
 /// A detected table region with its content.
@@ -747,27 +748,50 @@ impl TableDetector {
         // Store column widths for reference
         let columns = &detected.columns;
 
+        // Each span by the column it starts in first — unless it starts just short of the
+        // next column's boundary, within a font size of it, and most of it lies past the
+        // boundary (a header over a column of figures set flush right starts in the channel
+        // before them) — so every column's text is known.
+        let mut column_text = ColumnText::new(columns.len());
+        let placed: Vec<Vec<(usize, usize)>> = detected
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(row_idx, row_data)| {
+                row_data
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        let start = self.find_column_for_span(span.x, columns, detected.right_x);
+                        let mut first = start;
+                        if let Some(&edge) = columns.get(start + 1) {
+                            let next_end = columns.get(start + 2).copied().unwrap_or(f32::MAX);
+                            let before = edge - span.x;
+                            let past = (span.x + span.width).min(next_end) - edge;
+                            if before > 0.0 && before <= span.font_size && past > before {
+                                first += 1;
+                            }
+                        }
+                        if !span.text.trim().is_empty() {
+                            let (left, right) = span.ink_extent();
+                            column_text.add(row_idx, first, left, right);
+                        }
+                        (start, first)
+                    })
+                    .collect()
+            })
+            .collect();
+
         for (row_idx, row_data) in detected.rows.iter().enumerate() {
             // Create a cell content vector for each column
             let mut cell_contents: Vec<Vec<String>> = vec![Vec::new(); columns.len()];
 
-            // Assign each span to exactly one column (the closest one)
-            for span in &row_data.spans {
-                let span_x = span.x;
-
-                // Find the column this span belongs to: by its left edge — unless it starts
-                // just short of the next column's boundary, within a font size of it, and most
-                // of it lies past the boundary (a header over a column of figures set flush
-                // right starts in the channel before them).
-                let mut col_idx = self.find_column_for_span(span_x, columns, detected.right_x);
-                if let Some(&edge) = columns.get(col_idx + 1) {
-                    let next_end = columns.get(col_idx + 2).copied().unwrap_or(f32::MAX);
-                    let before = edge - span_x;
-                    let past = (span_x + span.width).min(next_end) - edge;
-                    if before > 0.0 && before <= span.font_size && past > before {
-                        col_idx += 1;
-                    }
-                }
+            // Then each span in the column whose text, in the other rows, it lies over
+            // (`ColumnText::column_for`); where it lies over none, where it was first put.
+            for (span, &(start, first)) in row_data.spans.iter().zip(&placed[row_idx]) {
+                let edge = columns.get(start + 1).copied();
+                let (left, right) = span.ink_extent();
+                let col_idx = column_text.column_for(row_idx, start, edge, left, right, first);
 
                 if col_idx < cell_contents.len() {
                     cell_contents[col_idx].push(span.text.trim().to_string());
@@ -2897,6 +2921,66 @@ mod tests {
         assert_eq!(header, ["Port", "Foreign", "Domestic"]);
         let first: Vec<String> = table.rows[1].cells.iter().map(|c| c.plain_text()).collect();
         assert_eq!(first, ["MANILA", "2454", "6,125"]);
+    }
+
+    /// A column whose cells all start just short of its boundary, inside a font size of it,
+    /// is that column: its text is where those cells are put, not where they start. Taken by
+    /// where they start, the figures would be the text of the column before, and the header
+    /// over them would follow them there.
+    #[test]
+    fn cells_put_in_their_column_by_the_boundary_nudge_are_its_text() {
+        let detector = TableDetector::new();
+        let row = |y: f32, cells: [(&str, f32, f32); 3]| TableRowData {
+            y,
+            spans: cells
+                .iter()
+                .map(|&(text, x, width)| measured(text, x, y, width))
+                .collect(),
+            sources: Vec::new(),
+        };
+        // Column 1 starts at 130; its header and figures start 11 points short of it, and
+        // most of each lies past it.
+        let detected = DetectedTable {
+            top_y: 700.0,
+            bottom_y: 670.0,
+            left_x: 72.0,
+            right_x: 260.0,
+            columns: vec![72.0, 130.0, 200.0],
+            rows: vec![
+                row(
+                    700.0,
+                    [
+                        ("Langue", 72.0, 34.0),
+                        ("Degrees", 118.5, 40.0),
+                        ("Sum", 200.0, 20.0),
+                    ],
+                ),
+                row(
+                    685.0,
+                    [
+                        ("Anglais", 72.0, 36.0),
+                        ("12.75", 119.0, 28.0),
+                        ("3.39", 200.0, 22.0),
+                    ],
+                ),
+                row(
+                    670.0,
+                    [
+                        ("Allemand", 72.0, 44.0),
+                        ("10.50", 119.0, 28.0),
+                        ("2.77", 200.0, 22.0),
+                    ],
+                ),
+            ],
+            confidence: 1.0,
+        };
+        let table = detector.to_table_model(&detected);
+        let cells = |r: usize| -> Vec<String> {
+            table.rows[r].cells.iter().map(|c| c.plain_text()).collect()
+        };
+        assert_eq!(cells(0), ["Langue", "Degrees", "Sum"]);
+        assert_eq!(cells(1), ["Anglais", "12.75", "3.39"]);
+        assert_eq!(cells(2), ["Allemand", "10.50", "2.77"]);
     }
 
     /// One-line rows set in groups with a space between them fill every column on every

@@ -49,6 +49,14 @@
   `Error::PageOutOfRange` (`UNPDF_ERROR_PAGE_OUT_OF_RANGE`), and a range that ends before it
   starts `Error::InvalidPageRange` (`UNPDF_ERROR_INVALID_PAGE_RANGE`) — in the Rust API, the
   C ABI's `pages` options and the bindings alike. `PageSelection::check` is the rule.
+- **A header goes with the column whose text it stands over.** In tables with and without
+  rules, a cell's text went to the column it starts in, moved to the next only when it started
+  within a font size of the boundary. A header centred over figures set flush right starts in
+  the channel before them, and further left than that when the figures are narrow
+  (`Domestic` over `6,125`), so it was put in the column before, beside the header of that
+  column. Text now goes with the column whose text, in the other rows, it lies over — counted
+  by rows, so a header spanning both columns in a row of its own does not decide it, and
+  measured to the end of its ink, so a cell padded with spaces does not reach into the next.
 - **A column of figures set flush right is a column.** In a table without rules, columns were
   found where text starts on many rows; figures set flush right start wherever their width puts
   them (`2454` left of `958`), so their column was missed and the figures were run together

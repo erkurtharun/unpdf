@@ -201,7 +201,7 @@ fn reads_as_prose(rows: &[&TableRowData]) -> bool {
 /// reason to lose the table. Up to a fifth of the rows may cross, and none in a table of
 /// fewer than five rows; the run that crosses stays in the cell it starts in.
 fn column_gaps(rows: &[&TableRowData]) -> Vec<(f32, f32)> {
-    let extent = span_extent;
+    let extent = TextSpan::ink_extent;
     let mut sizes: Vec<f32> = rows
         .iter()
         .flat_map(|r| r.spans.iter())
@@ -286,7 +286,7 @@ fn worksheet_gaps(rows: &[&TableRowData], min_gap: f32) -> Vec<(f32, f32)> {
     header
         .spans
         .windows(2)
-        .map(|w| (span_extent(&w[0]).1, w[1].x))
+        .map(|w| (w[0].ink_extent().1, w[1].x))
         .filter(|&(a, b)| b - a >= min_gap && is_worksheet(rows, (a, b)))
         .collect()
 }
@@ -315,23 +315,6 @@ fn reads_as_table(rows: &[&TableRowData], gaps: &[(f32, f32)]) -> bool {
     (split * 2 >= rows.len() || worksheet) && worded * 2 >= rows.len()
 }
 
-/// Where a run of text ends in ink: its trailing spaces are advance, and a gap measured to them
-/// comes out a space short (a header cell drawn as `Added cation ` stood 5 pt from the next one
-/// instead of 7).
-fn span_extent(s: &TextSpan) -> (f32, f32) {
-    let width = if s.width > 0.0 {
-        s.width
-    } else {
-        s.text.chars().count() as f32 * s.font_size * 0.5
-    };
-    let trailing = s.text.len() - s.text.trim_end().len();
-    let ink = (width - trailing as f32 * s.font_size * SPACE_EM).max(0.0);
-    (s.x, s.x + ink)
-}
-
-/// The advance of a space, in multiples of the font size -- what most text faces draw.
-const SPACE_EM: f32 = 0.25;
-
 /// A table to be filled in: a header row naming its columns, and rows under it that fill only
 /// the columns left of `gap` -- the rest is blank for the reader to write in. Only the header
 /// crosses the gap, so nothing else shows the column; three rows at least, each entry short.
@@ -341,12 +324,12 @@ fn is_worksheet(rows: &[&TableRowData], gap: (f32, f32)) -> bool {
     };
     let (a, b) = gap;
     rows.len() >= 3
-        && header.spans.iter().any(|s| span_extent(s).1 <= a + 0.5)
+        && header.spans.iter().any(|s| s.ink_extent().1 <= a + 0.5)
         && header.spans.iter().any(|s| s.x >= b - 0.5)
         && body.iter().all(|r| {
             r.spans
                 .iter()
-                .all(|s| span_extent(s).1 <= a + 0.5 && s.text.split_whitespace().count() <= 3)
+                .all(|s| s.ink_extent().1 <= a + 0.5 && s.text.split_whitespace().count() <= 3)
         })
 }
 
