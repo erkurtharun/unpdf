@@ -1418,6 +1418,21 @@ impl<'a> LayoutAnalyzer<'a> {
                         // where the run's ink ends. Trailing word spaces and adjustments move
                         // the text position without inking anything.
                         let mut ink_advance = Shift::default();
+                        // The room after the last glyph shown, in thousandths of an em beyond the
+                        // glyphs' own widths: the character spacing `Tc` that follows every glyph,
+                        // plus the adjustments since. A word gap is this room, however a producer
+                        // makes it — a `TJ` adjustment, or `Tc` that the adjustments inside each
+                        // word take back.
+                        let mut room: Option<f32> = None;
+                        let char_room = if text_state.params.size > 0.0 {
+                            text_state.params.char_spacing / text_state.params.size * 1000.0
+                        } else {
+                            0.0
+                        };
+                        // The room between two letters of a word in this run, which a word gap
+                        // is measured from: letter-spaced type has wide room between letters,
+                        // tightly tracked type little or none.
+                        let letter_room = letter_room(items, char_room);
                         // Adjustments before the first string move where the run *starts*, not
                         // how long it is: a TJ that opens with a large offset draws its first
                         // glyph far to the right of the text origin (a right-aligned date, a
@@ -1448,12 +1463,30 @@ impl<'a> LayoutAnalyzer<'a> {
                                         &mut suppressed_runs,
                                         &mut unreadable_fonts,
                                     );
-                                    text.push_str(&decoded.text);
+                                    if let Some(room) = room.take() {
+                                        maybe_insert_space_tj(&mut text, room - letter_room);
+                                    }
                                     let glyphs = self.backend.glyph_advances(
                                         op.scope(page_id),
                                         &text_state.font_resource,
                                         bytes,
                                     );
+                                    push_spaced(
+                                        &mut text,
+                                        &decoded.text,
+                                        glyphs.as_deref(),
+                                        char_room - letter_room,
+                                        |g| {
+                                            if g.is_word_space && text_state.params.size > 0.0 {
+                                                text_state.params.word_spacing
+                                                    / text_state.params.size
+                                                    * 1000.0
+                                            } else {
+                                                0.0
+                                            }
+                                        },
+                                    );
+                                    room = Some(char_room);
                                     if let Some(glyphs) = &glyphs {
                                         if let (true, Some(first)) = (first_glyph, glyphs.first()) {
                                             origin = text_state.params.origin_offset(first);
@@ -1486,13 +1519,18 @@ impl<'a> LayoutAnalyzer<'a> {
                                     if !drawn {
                                         lead += shift;
                                     }
-                                    maybe_insert_space_tj(&mut text, -n);
+                                    room = Some(room.unwrap_or(0.0) - n);
                                     if let Some(sum) = advance.as_mut() {
                                         *sum += shift;
                                     }
                                 }
                                 _ => {}
                             }
+                        }
+                        // An adjustment that closes the run still leaves its gap at the end, as it
+                        // always did; character spacing alone after the last glyph does not.
+                        if let Some(room) = room.filter(|&r| r != char_room) {
+                            maybe_insert_space_tj(&mut text, room - letter_room);
                         }
 
                         // The run's baseline is lifted by the text rise, as a superscript's is.
@@ -2253,7 +2291,70 @@ fn filter_header_footer_spans(spans: &mut Vec<TextSpan>, page_box: super::backen
 
         !is_page_num
     });
+    remove_folio_lines(spans, page_box);
     remove_side_margin_numbers(spans, page_box);
+}
+
+/// How far, as a share of the page height, a page number may sit from the bottom and the top
+/// edge — a page's own margins, which are wider than the 5% `filter_header_footer_spans`
+/// takes unconditionally.
+const FOOTER_SHARE: f32 = 0.15;
+const HEADER_SHARE: f32 = 0.10;
+
+/// Remove a bare page number that is the page's last line (or first), alone on its baseline,
+/// within the page's own margins.
+///
+/// Nearer the edge than 5% a bare number is taken for a page number unconditionally. Further
+/// in, a number alone could be a value — the last row of a table, a chart's tick — so it is
+/// one only where a page number is: below (or above) all other text on the page, with nothing
+/// beside it.
+fn remove_folio_lines(spans: &mut Vec<TextSpan>, page_box: super::backend::PageBox) {
+    let height = page_box.height();
+    if spans.len() < 2 || height <= 0.0 {
+        return;
+    }
+    let is_bare_number = |s: &TextSpan| {
+        let text = s.text.trim();
+        !text.is_empty()
+            && (text.chars().all(|c| c.is_ascii_digit()) || is_page_number_pattern(text))
+    };
+    // Alone on its baseline, or set apart from what shares it — a running footer's title at
+    // one side and the folio at the other — with no other number there, as a table row would
+    // have.
+    let width = page_box.width();
+    let alone = |i: usize| {
+        let s = &spans[i];
+        let (x0, x1) = s.ink_extent();
+        spans.iter().enumerate().all(|(j, o)| {
+            if j == i || (o.y - s.y).abs() > s.font_size.max(o.font_size) * 0.5 {
+                return true;
+            }
+            let (o0, o1) = o.ink_extent();
+            let gap = (o0 - x1).max(x0 - o1);
+            !is_bare_number(o) && gap >= width * 0.15
+        })
+    };
+    let mut drop = Vec::new();
+    for (i, s) in spans.iter().enumerate() {
+        if !is_bare_number(s) || !alone(i) {
+            continue;
+        }
+        // What is on other lines; what shares the folio's baseline was judged by `alone`.
+        let others = spans
+            .iter()
+            .enumerate()
+            .filter(|&(j, o)| j != i && (o.y - s.y).abs() > s.font_size.max(o.font_size) * 0.5);
+        let in_footer =
+            s.y <= page_box.lly + height * FOOTER_SHARE && others.clone().all(|(_, o)| o.y > s.y);
+        let in_header =
+            s.y >= page_box.ury - height * HEADER_SHARE && others.clone().all(|(_, o)| o.y < s.y);
+        if in_footer || in_header {
+            drop.push(i);
+        }
+    }
+    for i in drop.into_iter().rev() {
+        spans.remove(i);
+    }
 }
 
 /// How far, as a share of the page width, the side margins reach in from the page edges.
@@ -2548,6 +2649,66 @@ fn split_at_cell_gaps(items: &[PdfValue]) -> Vec<&[PdfValue]> {
     }
     parts.push(&items[start..]);
     parts
+}
+
+/// The room between two letters of a word in a run's items, in thousandths of an em: the
+/// least room between two consecutive strings or between two glyphs of one string (the
+/// character spacing), but never below no room at all unless the character spacing itself is
+/// below it.
+///
+/// A word gap is room well beyond this. Absolute room misreads both ways: letter-spaced type
+/// (`Tc` of a fifth of an em) has that much between every two letters, and tightly tracked type
+/// (negative `Tc`) can make a word gap narrower than a fixed threshold. Kerning — a negative
+/// adjustment inside a word — does not lower it below zero, or every unkerned pair would read
+/// as a gap.
+fn letter_room(items: &[PdfValue], char_room: f32) -> f32 {
+    let mut least = char_room;
+    let mut since: Option<f32> = None;
+    for item in items {
+        match item {
+            PdfValue::Str(_) => {
+                if let Some(room) = since.take() {
+                    least = least.min(room);
+                }
+                since = Some(char_room);
+            }
+            PdfValue::Integer(_) | PdfValue::Real(_) => {
+                if let Some(room) = since.as_mut() {
+                    *room -= get_number_from_value(item).unwrap_or(0.0);
+                }
+            }
+            _ => {}
+        }
+    }
+    least.max(char_room.min(0.0))
+}
+
+/// Append the text of one string, with a space wherever the room after a glyph — the character
+/// spacing, and the word spacing after a word space (`word_room`) — is a word gap by
+/// [`maybe_insert_space_tj`]'s measure. Only when each glyph decoded to one character, so the
+/// room after a glyph is the room after its character; otherwise the text goes in as decoded.
+fn push_spaced(
+    text: &mut String,
+    decoded: &str,
+    glyphs: Option<&[super::backend::GlyphAdvance]>,
+    char_room: f32,
+    word_room: impl Fn(&super::backend::GlyphAdvance) -> f32,
+) {
+    let chars = decoded.chars().count();
+    let Some(glyphs) = glyphs.filter(|g| g.len() == chars && chars > 1 && char_room > 0.0) else {
+        text.push_str(decoded);
+        return;
+    };
+    let mut prev: Option<char> = None;
+    for (i, c) in decoded.chars().enumerate() {
+        // Spaced-out punctuation — a contents leader's dots — is a run of marks, not words.
+        let between_marks = prev.is_some_and(|p| !p.is_alphanumeric()) && !c.is_alphanumeric();
+        if let (Some(before), false) = (i.checked_sub(1).map(|j| &glyphs[j]), between_marks) {
+            maybe_insert_space_tj(text, char_room + word_room(before));
+        }
+        text.push(c);
+        prev = Some(c);
+    }
 }
 
 /// Insert a space in TJ array based on kerning adjustment, with script-aware thresholds.

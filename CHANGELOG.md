@@ -47,9 +47,25 @@
   of a line, and the line became a list item — the dash turned into a bullet and a minus sign
   was lost. A line opening with a dash continues the sentence when the line before runs to the
   column's edge and ends without closing a sentence or clause.
+- **Words separated by character spacing are separated in the text.** A producer may make the
+  gap between words with character spacing (`Tc`) that the adjustments inside each word take
+  back; only adjustments were read as gaps, so such a line came out as one word
+  (`butthesecondonegivestheright`). The gap after a glyph now counts its character spacing as
+  well as the adjustments, and adjustments in a row add up to one gap. Spaced-out punctuation
+  (a contents leader's dots) stays one run.
+- **A page number in the page's own margin is left out even when it is not at the very
+  edge.** Bare numbers were dropped only within 5% of the page's top or bottom; a folio set
+  higher, as most are, stayed in the text. A bare number that is the page's last (or first)
+  line within its bottom 15% (top 10%), alone on its baseline or set well apart from a running
+  title, is now taken for a page number.
 
 ### Changed
 
+- **The `Standard` cleanup keeps lines that hold only a number.** It removed every such line as
+  a page number, judged by its text alone — chart values and table numbers set as lines of their
+  own went with them (127 lines in 53 of 200 benchmark documents, 125 of them content). Page
+  numbers are left out by where they sit before rendering (see Fixed); text-only removal remains
+  in `Aggressive` (`CleanupOptions::remove_page_numbers`).
 - **Breaking: `parser::TextSpan` gains `ink_width: Option<f32>`** (where its inked glyphs end,
   see Fixed). Code that builds a `TextSpan` with a struct literal adds the field (`None` when
   unknown).

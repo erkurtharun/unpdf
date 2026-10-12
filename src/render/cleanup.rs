@@ -24,7 +24,11 @@ pub struct CleanupOptions {
     /// Standardize bullet characters (•, ●, ○ → •)
     pub standardize_bullets: bool,
 
-    /// Remove page numbers
+    /// Remove every line that holds only a number (`12`, `- 12 -`, `—12`) as a page number.
+    ///
+    /// Judged by the text alone, so it also removes a chart's values and a table's numbers
+    /// set as lines of their own. Page numbers are already left out where they sit — in the
+    /// page's margins — before rendering, so this is off except in `Aggressive`.
     pub remove_page_numbers: bool,
 
     /// Rewrite table-of-contents dot leaders: drop the leader and fold a trailing page
@@ -103,7 +107,9 @@ impl CleanupOptions {
         Self {
             normalize_unicode: true,
             standardize_bullets: true,
-            remove_page_numbers: true,
+            // Page numbers are left out by position before rendering; by text alone this
+            // removed chart and table values (127 lines in 53 of 200 benchmark documents).
+            remove_page_numbers: false,
             remove_toc: false,
             fix_ligatures: true,
             fix_hyphenation: true,
@@ -595,11 +601,23 @@ mod tests {
         assert_eq!(pipeline.process(text), text.trim_end());
     }
 
-    /// A page number set between dashes is removed; a negative number alone on its line
-    /// is a value, and keeps its line.
+    /// Standard keeps a line that holds only a number: by its text alone it may as well be a
+    /// chart's value or a table's as a page number, and page numbers are left out by position
+    /// before rendering.
+    #[test]
+    fn standard_cleanup_keeps_a_line_holding_only_a_number() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        for value in ["12", "100", "- 12 -", "2019"] {
+            let text = format!("Before.\n\n{value}\n\nAfter.");
+            assert_eq!(pipeline.process(&text), text, "{value:?}");
+        }
+    }
+
+    /// With page-number removal on (`Aggressive`), a number set between dashes is removed; a
+    /// negative number alone on its line is a value, and keeps its line.
     #[test]
     fn page_number_removal_keeps_a_lone_negative_number() {
-        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Aggressive);
         for page_number in ["- 12 -", "-12-", "– 3 –", "- 12", "12", "—12"] {
             let text = format!("Before.\n\n{page_number}\n\nAfter.");
             assert_eq!(
