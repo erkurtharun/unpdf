@@ -28,6 +28,21 @@ internal sealed class ParseOptionsPayload
 
     [JsonPropertyName("suppress_low_confidence_ocr")]
     public bool? SuppressLowConfidenceOcr { get; init; }
+
+    [JsonPropertyName("pages")]
+    public PageListPayload? Pages { get; init; }
+
+    [JsonPropertyName("ai_base_url")]
+    public string? AiBaseUrl { get; init; }
+
+    [JsonPropertyName("ai_api_key")]
+    public string? AiApiKey { get; init; }
+
+    [JsonPropertyName("ai_model")]
+    public string? AiModel { get; init; }
+
+    [JsonPropertyName("ai_image_scope")]
+    public string? AiImageScope { get; init; }
 }
 
 /// <summary>
@@ -73,7 +88,7 @@ internal sealed class MarkdownOptionsPayload
 }
 
 /// <summary>
-/// <c>{"pages": [n, ...]}</c> — the page-list form of the <c>pages</c> render option.
+/// <c>{"pages": [n, ...]}</c> — the page-list form of the <c>pages</c> parse and render options.
 /// </summary>
 internal sealed class PageListPayload
 {

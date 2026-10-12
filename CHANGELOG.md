@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- .NET `ParseOptions` gains `Pages` and the AI pass's settings — `AiBaseUrl`, `AiApiKey`,
+  `AiModel` and `AiImageScope` (a new `AiImageScope` enum). The C ABI's parse options took
+  all five, and Python reached them through its options dict; .NET had no way to set them.
+
 ### Removed
 
 - **Breaking: `RenderOptions::image_dir`, `RenderOptions::with_image_dir` and

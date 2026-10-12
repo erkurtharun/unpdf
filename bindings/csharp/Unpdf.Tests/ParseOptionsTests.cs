@@ -97,4 +97,46 @@ public class ParseOptionsTests
             System.IO.File.Delete(path);
         }
     }
+
+    /// <summary>
+    /// Every field the C ABI's parse options take is reachable from here. <see cref="ParseOptions.Pages"/>
+    /// selects what is parsed: a page outside the document is refused, not ignored.
+    /// </summary>
+    [Fact]
+    public void Pages_SelectsWhatIsParsed()
+    {
+        using var all = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+        using var first = UnpdfDocument.ParseBytes(
+            PdfFixtures.TextPdf(), new ParseOptions { Pages = [1] });
+        Assert.Equal(all.SectionCount, first.SectionCount);
+
+        var ex = Assert.Throws<UnpdfException>(() => UnpdfDocument.ParseBytes(
+            PdfFixtures.TextPdf(), new ParseOptions { Pages = [99] }));
+        Assert.Equal(UnpdfErrorKind.PageOutOfRange, ex.Kind);
+    }
+
+    /// <summary>
+    /// The AI settings reach the native parser under the names it reads, and an incomplete
+    /// configuration is refused there -- whether or not the library was built with the
+    /// <c>ai</c> feature, it names the setting rather than ignoring it.
+    /// </summary>
+    [Fact]
+    public void AiSettings_ReachTheNativeParser()
+    {
+        var json = new ParseOptions
+        {
+            AiBaseUrl = "http://localhost:1/v1",
+            AiApiKey = "key",
+            AiModel = "model",
+            AiImageScope = AiImageScope.LowConfidencePagesOnly,
+        }.ToJson();
+        Assert.Equal(
+            """{"ai_base_url":"http://localhost:1/v1","ai_api_key":"key","ai_model":"model","ai_image_scope":"low_confidence_pages_only"}""",
+            json);
+
+        var ex = Assert.Throws<UnpdfException>(() => UnpdfDocument.ParseBytes(
+            PdfFixtures.TextPdf(), new ParseOptions { AiModel = "model" }));
+        Assert.Equal(UnpdfErrorKind.InvalidArgument, ex.Kind);
+        Assert.Contains("ai_", ex.Message);
+    }
 }

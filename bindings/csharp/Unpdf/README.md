@@ -147,6 +147,22 @@ foreach (var id in doc.GetResourceIds())
 Use `GetPageStats` instead of `ResourceCount` to detect image-only pages without
 paying the extraction cost.
 
+### Choosing pages and the AI pass
+
+`Pages` parses only the pages listed (1-indexed); one the document does not have throws
+`UnpdfException` with `UnpdfErrorKind.PageOutOfRange`:
+
+```csharp
+using var doc = UnpdfDocument.ParseFile(path, new ParseOptions { Pages = [1, 2, 3] });
+```
+
+`AiBaseUrl`, `AiApiKey` and `AiModel` (all three, or none) configure the AI pass that
+describes images and re-reads pages whose text layer is unreadable; `AiImageScope` limits
+it to the images on low-confidence pages. The native library in this package includes the
+AI pass; an incomplete configuration throws `UnpdfException` naming what is missing, and a
+native library built without the `ai` feature names the setting it cannot honour — neither
+parses as if the setting were not there.
+
 ### Rendering a page
 
 `RenderPage` paints a page of the parsed document to a PNG — the same page text extraction

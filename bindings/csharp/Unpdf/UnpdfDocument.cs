@@ -154,6 +154,17 @@ public class MarkdownOptions
 }
 
 /// <summary>
+/// Which images the AI pass describes (<see cref="ParseOptions.AiImageScope"/>).
+/// </summary>
+public enum AiImageScope
+{
+    /// <summary>Every extracted image.</summary>
+    All,
+    /// <summary>Only the images on pages whose text layer reads as low confidence.</summary>
+    LowConfidencePagesOnly,
+}
+
+/// <summary>
 /// Options for parsing a document.
 /// </summary>
 /// <remarks>
@@ -201,11 +212,39 @@ public class ParseOptions
     /// </summary>
     public bool? SuppressLowConfidenceOcr { get; set; }
 
+    /// <summary>
+    /// The pages parsed (1-indexed), or <see langword="null"/> (the default) for every page.
+    /// A page the document does not have throws <see cref="UnpdfException"/> with
+    /// <see cref="UnpdfErrorKind.PageOutOfRange"/>.
+    /// </summary>
+    public IReadOnlyList<int>? Pages { get; set; }
+
+    /// <summary>
+    /// The OpenAI-compatible endpoint of the AI pass, which describes images and re-reads
+    /// pages whose text layer is unreadable. Set it with <see cref="AiApiKey"/> and
+    /// <see cref="AiModel"/> — all three or none. Needs a native library built with the
+    /// <c>ai</c> feature; without it, parsing throws <see cref="UnpdfException"/> naming the field.
+    /// </summary>
+    public string? AiBaseUrl { get; set; }
+
+    /// <summary>The AI pass's API key. See <see cref="AiBaseUrl"/>.</summary>
+    public string? AiApiKey { get; set; }
+
+    /// <summary>The AI pass's model name. See <see cref="AiBaseUrl"/>.</summary>
+    public string? AiModel { get; set; }
+
+    /// <summary>
+    /// Which images the AI pass describes. Default: <see cref="Unpdf.AiImageScope.All"/>.
+    /// Needs <see cref="AiBaseUrl"/>, <see cref="AiApiKey"/> and <see cref="AiModel"/>.
+    /// </summary>
+    public AiImageScope? AiImageScope { get; set; }
+
     internal string? ToJson()
     {
         var set = Strict.HasValue || ExtractText.HasValue || ExtractResources.HasValue
             || MinImageDimension.HasValue || Parallel.HasValue || Password is not null
-            || SuppressLowConfidenceOcr.HasValue;
+            || SuppressLowConfidenceOcr.HasValue || Pages is not null || AiBaseUrl is not null
+            || AiApiKey is not null || AiModel is not null || AiImageScope.HasValue;
         if (!set) return null;
 
         var payload = new ParseOptionsPayload
@@ -217,6 +256,17 @@ public class ParseOptions
             Parallel = Parallel,
             Password = Password,
             SuppressLowConfidenceOcr = SuppressLowConfidenceOcr,
+            Pages = Pages is null ? null : new PageListPayload { Pages = Pages.ToArray() },
+            AiBaseUrl = AiBaseUrl,
+            AiApiKey = AiApiKey,
+            AiModel = AiModel,
+            AiImageScope = AiImageScope switch
+            {
+                null => null,
+                Unpdf.AiImageScope.All => "all",
+                Unpdf.AiImageScope.LowConfidencePagesOnly => "low_confidence_pages_only",
+                _ => throw new ArgumentOutOfRangeException(nameof(AiImageScope)),
+            },
         };
         return JsonSerializer.Serialize(payload, UnpdfJsonContext.Default.ParseOptionsPayload);
     }
