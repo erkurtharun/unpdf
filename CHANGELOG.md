@@ -23,6 +23,9 @@
 
 ### Changed
 
+- **Breaking: `parser::TextSpan` gains `ink_width: Option<f32>`** (where its inked glyphs end,
+  see Fixed). Code that builds a `TextSpan` with a struct literal adds the field (`None` when
+  unknown).
 - **The CLI checks for a newer release at most once a day, and can be told not to.** Every
   command used to ask GitHub and wait up to half a second for the answer, and nothing turned it
   off. The answer is now cached for a day, so the other runs make no request and wait for
