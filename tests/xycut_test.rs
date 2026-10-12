@@ -519,3 +519,57 @@ fn single_column_text_over_a_wide_table_is_not_cut_into_columns() {
         seg.groups
     );
 }
+
+/// The thresholds the layout pass uses for a 9.5pt body: a gutter is half an em.
+const BODY_9_5PT: XyCutConfig = XyCutConfig {
+    min_x_gap: 60.0,
+    min_y_gap: 36.0,
+    min_gutter: 4.75,
+};
+
+/// Two columns set six points apart in 9.5pt type -- two thirds of an em, as printed reports
+/// set them. Read as one region, every line ran across both columns.
+#[test]
+fn a_gutter_two_thirds_of_an_em_wide_splits_two_columns() {
+    let mut blocks = Vec::new();
+    for i in 0..8 {
+        let y = 700.0 - i as f32 * 12.0;
+        blocks.push(make_block(94.0, y, 229.0, 9.5));
+        blocks.push(make_block(329.0, y, 228.0, 9.5));
+    }
+    let groups = xycut_segment(&blocks, &BODY_9_5PT);
+    assert_eq!(groups.len(), 2, "{groups:?}");
+    assert!(groups[0].iter().all(|b| b.x < 100.0), "left column first");
+}
+
+/// A two-line paragraph drawn a word at a time, its second line short: under the space after
+/// one word of the first line there is a clear channel, with five words beyond it. Five words
+/// are one line, not a column of text.
+#[test]
+fn a_short_paragraph_drawn_word_by_word_is_not_two_columns() {
+    const BODY_11_5PT: XyCutConfig = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 5.75,
+    };
+    let mut blocks = Vec::new();
+    // First line: words up to 361, a 6pt space, then five more words to 560.
+    let mut x = 54.0;
+    for w in [41.0, 50.0, 20.0, 51.0, 62.0, 61.0 - 22.0] {
+        blocks.push(make_block(x, 700.0, w, 11.5));
+        x += w + 4.0;
+    }
+    let mut x = 367.0;
+    for w in [22.0, 14.0, 46.0, 75.0, 20.0] {
+        blocks.push(make_block(x, 700.0, w, 11.5));
+        x += w + 4.0;
+    }
+    // Second line: short.
+    let mut x = 54.0;
+    for w in [24.0, 40.0, 20.0, 30.0, 18.0, 40.0] {
+        blocks.push(make_block(x, 686.0, w, 11.5));
+        x += w + 4.0;
+    }
+    let groups = xycut_segment(&blocks, &BODY_11_5PT);
+    assert_eq!(groups.len(), 1, "{groups:?}");
+}

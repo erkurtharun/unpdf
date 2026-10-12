@@ -50,7 +50,7 @@ impl TextSpan {
         let width = if self.width > 0.0 {
             self.width
         } else {
-            self.text.chars().count() as f32 * self.font_size * 0.5
+            estimate_text_width(&self.text, self.font_size)
         };
         let trailing = self.text.len() - self.text.trim_end().len();
         let ink = (width - trailing as f32 * self.font_size * SPACE_EM).max(0.0);
@@ -2641,19 +2641,22 @@ fn is_hangul_char(c: char) -> bool {
     || (0xD7B0..=0xD7FF).contains(&code)
 }
 
-/// One XY-Cut block per span: where its text lies on the page.
+/// One XY-Cut block per span: where its ink lies on the page.
+///
+/// Ink, not advance: a line's trailing space reaches toward the next column, and across a
+/// gutter half an em wide that is enough to join a line to the one beside it and read the two
+/// columns as a single line set across both.
 pub(crate) fn xycut_blocks(spans: &[TextSpan]) -> Vec<super::xycut::Block> {
     spans
         .iter()
-        .map(|s| super::xycut::Block {
-            x: s.x,
-            y: s.y,
-            width: if s.width > 0.0 {
-                s.width
-            } else {
-                estimate_text_width(&s.text, s.font_size)
-            },
-            height: s.font_size,
+        .map(|s| {
+            let (left, right) = s.ink_extent();
+            super::xycut::Block {
+                x: left,
+                y: s.y,
+                width: right - left,
+                height: s.font_size,
+            }
         })
         .collect()
 }
@@ -2666,13 +2669,16 @@ pub(crate) fn xycut_blocks(spans: &[TextSpan]) -> Vec<super::xycut::Block> {
 ///
 /// A column gutter is far narrower than that, so a narrower channel still splits — but only
 /// when text of real width lies on both sides of it (see `XyCutConfig::min_gutter`), which
-/// list markers and indents never do.
+/// list markers and indents never do. Half an em: a word space is a quarter, and gutters set
+/// at two thirds of an em are in print. The same width is how far apart two runs may sit and
+/// still be one line, so a floor above the gutter joined the two columns' lines into one and
+/// left no gutter to find.
 pub(crate) fn xycut_config(spans: &[TextSpan]) -> super::xycut::XyCutConfig {
     let median_font = median_font_size(spans);
     super::xycut::XyCutConfig {
         min_x_gap: (median_font * 5.0).max(60.0),
         min_y_gap: (median_font * 3.0).max(36.0),
-        min_gutter: median_font.max(8.0),
+        min_gutter: (median_font * 0.5).max(4.0),
     }
 }
 
@@ -3112,6 +3118,22 @@ mod tests {
     use super::*;
 
     /// A run padded with spaces to a fixed width ends where its ink does.
+    #[test]
+    fn an_xycut_block_ends_where_its_ink_does() {
+        // A wrapped title's first line keeps its trailing space; read as advance it reached
+        // across a gutter half an em wide and joined the line beside it.
+        let mut title = TextSpan::new("Changing ".into(), 94.0, 351.0, 9.5, "Bold".into());
+        title.width = 60.0;
+        let block = xycut_blocks(&[title])[0];
+        assert_eq!((block.x, block.width), (94.0, 60.0 - 9.5 * SPACE_EM));
+    }
+
+    #[test]
+    fn a_gutter_is_half_an_em() {
+        let span = TextSpan::new("text".into(), 0.0, 0.0, 9.5, "F".into());
+        assert_eq!(xycut_config(&[span]).min_gutter, 4.75);
+    }
+
     #[test]
     fn ink_extent_leaves_out_trailing_spaces() {
         let mut padded = TextSpan::new(

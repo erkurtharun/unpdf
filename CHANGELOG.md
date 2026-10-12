@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Two columns set close together are read as two columns.** A gutter had to be at least as
+  wide as the body type (and 8 pt) to be found, and the same width decided how far apart two
+  runs of text could be and still join into one line — so across a gutter narrower than an em,
+  each line of the left column joined the line beside it and the page was read line by line
+  across both columns. A gutter is now found from half an em, and a side's own lines still join
+  across a full em of word space.
+- Where a line ends is where its ink ends: a trailing space no longer extends a column's line
+  toward the next column, which closed narrow gutters beside headings that wrap.
+
 ## 0.40.0 — 2026-10-12
 
 ### Changed

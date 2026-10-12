@@ -28,7 +28,7 @@ pub struct XyCutConfig {
     /// A narrower vertical channel, down to this width, splits a region only as a
     /// column gutter: when the text on each side spans at least
     /// [`GUTTER_MIN_SIDE_SHARE`] of the region's width and holds at least
-    /// [`GUTTER_MIN_SIDE_BLOCKS`] blocks. Gutters between text columns are a line
+    /// [`GUTTER_MIN_SIDE_BLOCKS`] lines. Gutters between text columns are a line
     /// height or two wide — far narrower than a safe unconditional cut — while the
     /// channel between a list's markers and its items is just as narrow but leaves
     /// a sliver on one side. Set it equal to `min_x_gap` to disable the rule.
@@ -37,7 +37,8 @@ pub struct XyCutConfig {
 
 /// Minimum share of a region's width each side of a column gutter must span.
 pub const GUTTER_MIN_SIDE_SHARE: f32 = 0.3;
-/// Minimum number of blocks on each side of a column gutter.
+/// Minimum number of lines on each side of a column gutter -- lines, not blocks: a page drawn a
+/// word at a time puts a line's words on both sides of any space between two of them.
 pub const GUTTER_MIN_SIDE_BLOCKS: usize = 3;
 
 /// The narrowest a column beside a gutter can be when it is under [`GUTTER_MIN_SIDE_SHARE`]
@@ -51,6 +52,15 @@ pub const NARROW_COLUMN_LINE_FILL: f32 = 0.6;
 /// share of [`XyCutConfig::min_gutter`] — the error a glyph-width estimate or a trailing side
 /// bearing puts there.
 pub const GUTTER_EDGE_SLACK: f32 = 0.2;
+
+/// How far apart, in multiples of [`XyCutConfig::min_gutter`], two runs on one side of a channel
+/// may stand and still be one line: an em, wider than the widest word space of a justified line.
+///
+/// A side's lines are joined only after the region is divided at the channel, so nothing
+/// joined here crosses it. Across the whole region, runs are joined only up to the gutter
+/// itself -- a wider join would put the two columns' lines together and close the gutter
+/// being looked for.
+pub const SIDE_JOIN_GUTTERS: f32 = 2.0;
 
 /// Minimum share of a region's width a line must span to count as a line of running text
 /// beside a gutter: a column's lines fill most of it, while the fragments a table of
@@ -252,7 +262,7 @@ pub fn text_column_gutter(blocks: &[Block], min_gutter: f32) -> Option<f32> {
             line_widths(
                 set.iter()
                     .filter(|b| (b.x + b.width / 2.0 < channel) == left),
-                min_gutter,
+                min_gutter * SIDE_JOIN_GUTTERS,
             )
         };
         reads_as_text_column(&side(true), range) && reads_as_text_column(&side(false), range)
@@ -304,7 +314,7 @@ fn spanning_band(
             narrow
                 .iter()
                 .filter(|b| (b.x + b.width / 2.0 < gutter) == left),
-            config.min_gutter,
+            config.min_gutter * SIDE_JOIN_GUTTERS,
         );
         reads_as_text_column(&lines, range)
     };
@@ -593,12 +603,12 @@ fn find_best_vertical_gap(
         let gap_left = min_x + start as f32 * resolution;
         let gap_right = gap_left + width;
         let center = (gap_left + gap_right) / 2.0;
-        let left_blocks = blocks
-            .iter()
-            .filter(|b| b.x + b.width / 2.0 < center)
-            .count();
-        let right_blocks = blocks.len() - left_blocks;
-        if left_blocks < GUTTER_MIN_SIDE_BLOCKS || right_blocks < GUTTER_MIN_SIDE_BLOCKS {
+        let (left, right): (Vec<Block>, Vec<Block>) =
+            blocks.iter().partition(|b| b.x + b.width / 2.0 < center);
+        let side_join = config.min_gutter * SIDE_JOIN_GUTTERS;
+        if lines_of(&left, side_join).len() < GUTTER_MIN_SIDE_BLOCKS
+            || lines_of(&right, side_join).len() < GUTTER_MIN_SIDE_BLOCKS
+        {
             return false;
         }
         let min_side = range * GUTTER_MIN_SIDE_SHARE;
@@ -632,7 +642,10 @@ fn find_best_vertical_gap(
         let side = blocks
             .iter()
             .filter(|b| (b.x + b.width / 2.0 < center) == narrow_is_left);
-        fills_its_column(&line_widths(side, config.min_gutter), narrow_width)
+        fills_its_column(
+            &line_widths(side, config.min_gutter * SIDE_JOIN_GUTTERS),
+            narrow_width,
+        )
     };
 
     widest_qualifying_gap(&profile, resolution, min_x, qualifies)
