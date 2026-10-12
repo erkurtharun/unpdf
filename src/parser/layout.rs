@@ -121,67 +121,6 @@ pub struct TextLine {
     pub heading_level: u8,
 }
 
-/// True if a span's text is nothing but a run of `.` characters (a PDF-rendered
-/// TOC dot leader), long enough not to be a truncated prose ellipsis. Unlike the
-/// text-level regex in `render::cleanup`, this checks a single span in isolation —
-/// a span with *only* dots is a far stronger signal than a dot run inside otherwise
-/// mixed text, so a lower, more inclusive threshold is safe here.
-fn is_dot_leader_span(span: &TextSpan) -> bool {
-    let t = span.text.trim();
-    t.len() >= 4 && t.chars().all(|c| c == '.')
-}
-
-/// Strip PDF-rendered TOC dot leaders directly from a line's spans, before line-
-/// joining collapses the exact span boundaries a text-level regex would otherwise
-/// have to guess at from whitespace alone. A run of one or more consecutive
-/// dot-leader spans is dropped; if a purely-numeric span immediately follows the
-/// run, it is kept and reformatted as `(p.N)` (matching `render::cleanup`'s output
-/// shape) instead of being left as a bare trailing digit.
-///
-/// This only catches the case where the dot leader is its own span(s) — a PDF
-/// backend that emits an entire "Title .... N" line as one merged span is still
-/// caught downstream by the (optional) `render::cleanup` regex pass; the two are
-/// complementary, not redundant.
-///
-/// `pub(crate)`: also used by `pdf_parser`'s low-confidence table-row fallback,
-/// which builds paragraph text directly from spans without going through
-/// `TextLine`.
-pub(crate) fn normalize_dot_leaders(spans: Vec<TextSpan>) -> Vec<TextSpan> {
-    let mut out: Vec<TextSpan> = Vec::with_capacity(spans.len());
-    let mut i = 0;
-    while i < spans.len() {
-        if !is_dot_leader_span(&spans[i]) {
-            out.push(spans[i].clone());
-            i += 1;
-            continue;
-        }
-
-        // Consume the whole run of consecutive dot-leader spans.
-        let mut j = i + 1;
-        while j < spans.len() && is_dot_leader_span(&spans[j]) {
-            j += 1;
-        }
-
-        // A purely-numeric span immediately after the run is the page number.
-        if let Some(page_span) = spans.get(j) {
-            let digits = page_span.text.trim();
-            let is_page_number = !digits.is_empty()
-                && digits.len() <= 5
-                && digits.chars().all(|c| c.is_ascii_digit());
-            if is_page_number {
-                let mut renumbered = page_span.clone();
-                renumbered.text = format!("(p.{})", digits);
-                out.push(renumbered);
-                i = j + 1;
-                continue;
-            }
-        }
-
-        i = j;
-    }
-    out
-}
-
 /// The pitch of the lines around the gap above line `i`: the smallest of the two spacings before
 /// that gap and the two after it (`spacings[j]` is the distance from line `j - 1` to line `j`),
 /// or `None` when there are none.
@@ -264,23 +203,8 @@ impl TextLine {
         // Sort spans by X position
         spans.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Position is taken from the original leftmost span, before dot-leader
-        // normalization — a line that turns out to be leader-only still occupies
-        // its real position on the page.
         let y = spans[0].y;
         let x = spans[0].x;
-
-        let spans = normalize_dot_leaders(spans);
-        if spans.is_empty() {
-            return Self {
-                spans,
-                y,
-                x,
-                font_size: 0.0,
-                is_heading: false,
-                heading_level: 0,
-            };
-        }
 
         // Calculate dominant font size (weighted by text length) -- except on a line of faux
         // small capitals, which is set at the size of its initials.
@@ -2099,6 +2023,13 @@ impl<'a> LayoutAnalyzer<'a> {
             return true;
         }
 
+        // A contents entry ends at its page reference. Its lines are set at the body's pitch,
+        // so nothing else tells them apart, and joined they run every entry of a contents page
+        // into one paragraph.
+        if ends_a_contents_entry(&prev_line.text()) {
+            return true;
+        }
+
         // Large spacing indicates new paragraph
         let spacing = (prev_line.y - curr_line.y).abs();
         if spacing > avg_spacing * 1.5 {
@@ -2129,6 +2060,73 @@ impl<'a> LayoutAnalyzer<'a> {
 
         false
     }
+}
+
+/// Whether `text` ends the way a table-of-contents entry does: a dot leader, then the page
+/// reference -- `Methods ........ 12`, `Preface . . . . . ix`, `Results…………32`.
+///
+/// The leader is what makes it an entry: a number at the end of a line is common in prose, a run
+/// of four or more leader dots before it is not. All three ways a leader is set count -- one run of
+/// periods, periods spaced out one by one, and the ellipsis character.
+pub(crate) fn ends_a_contents_entry(text: &str) -> bool {
+    let text = text.trim_end();
+    let reference_len = text
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit() || "ivxlcdmIVXLCDM".contains(*c))
+        .count();
+    if reference_len == 0 || reference_len > 7 {
+        return false;
+    }
+    let (rest, reference) = text.split_at(text.len() - reference_len);
+    let is_number = reference.chars().all(|c| c.is_ascii_digit());
+    let is_roman = reference.chars().all(|c| "ivxlcdm".contains(c))
+        || reference.chars().all(|c| "IVXLCDM".contains(c));
+    if !(is_number && reference.len() <= 4 || is_roman) {
+        return false;
+    }
+    leader_dots(rest.chars().rev()) >= 4
+}
+
+/// The dots of the leader a run of characters starts with: periods count one, the ellipsis
+/// character three, and the spaces a spaced-out leader sets between its dots nothing.
+fn leader_dots(chars: impl Iterator<Item = char>) -> usize {
+    let mut dots = 0;
+    for c in chars {
+        match c {
+            '.' => dots += 1,
+            '…' => dots += 3,
+            ' ' | '\u{a0}' => {}
+            _ => break,
+        }
+    }
+    dots
+}
+
+/// A table cell's text without a dot leader at either end.
+///
+/// A contents page read as a table puts each entry's leader at the edge of its title cell or its
+/// page cell: on the page the leader joins the two, and in a table the column boundary does that.
+/// Left in, it is fill, like the spaces a cell is padded with. A leader is four dots or more, so
+/// an ellipsis that ends a cell's sentence stays.
+pub(crate) fn trim_leaders(text: &str) -> &str {
+    let mut text = text.trim();
+    if leader_dots(text.chars().rev()) >= 4 {
+        let cut = text
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| !matches!(c, '.' | '…' | ' ' | '\u{a0}'))
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        text = text[..cut].trim_end();
+    }
+    if leader_dots(text.chars()) >= 4 {
+        let cut = text
+            .char_indices()
+            .find(|&(_, c)| !matches!(c, '.' | '…' | ' ' | '\u{a0}'))
+            .map_or(text.len(), |(i, _)| i);
+        text = text[cut..].trim_start();
+    }
+    text
 }
 
 /// Filter out header/footer text spans (page numbers, running headers).
@@ -4061,7 +4059,6 @@ mod tests {
         assert_eq!(merged[1].text, "W");
     }
 
-    /// Helper: a span at a given x/width, dots leader spans included.
     fn span_at(text: &str, x: f32, width: f32) -> TextSpan {
         TextSpan {
             width,
@@ -4071,116 +4068,89 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_dot_leaders_drops_leader_keeps_page_number() {
-        let spans = vec![
-            span_at("Chapter 1", 100.0, 54.0),
-            span_at("....................", 160.0, 120.0),
-            span_at("6", 290.0, 6.0),
+    fn test_a_contents_entry_ends_at_its_page_reference() {
+        for entry in [
+            "Measurement Lab worksheet ........................ 3",
+            "Foreword to the 2021 Edition . . . . . . . . . . . xi",
+            "CellularBiology……………………………………32",
+            "Appendix A .....................................XII",
+            " .................. 33",
+        ] {
+            assert!(ends_a_contents_entry(entry), "{entry}");
+        }
+        for text in [
+            // The first line of a wrapped entry: its leader is on the next line.
+            "A cell is the smallest unit of life known to our planet.",
+            // A number at the end of prose is not a page reference.
+            "The sample was heated to 120",
+            "as shown in Table 3",
+            // An ellipsis in prose is three dots, not a leader.
+            "and so on... 12",
+            // A leader with nothing after it ends no entry yet.
+            "Cellular Microscopy ...................",
+            // Not a numeral: mixed-case roman letters, or a year-sized run of digits past four.
+            "Chapter One ........ Mix",
+            "Total ........ 123456",
+        ] {
+            assert!(!ends_a_contents_entry(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn test_a_cell_loses_the_leader_at_its_edges_only() {
+        assert_eq!(
+            trim_leaders("1.5 Planar Graphs ......................."),
+            "1.5 Planar Graphs"
+        );
+        assert_eq!(trim_leaders(". . . . . . 21"), "21");
+        assert_eq!(trim_leaders("Results…………"), "Results");
+        assert_eq!(trim_leaders("  ....... "), "");
+        // An ellipsis is not a leader, and dots inside the text are the text's own.
+        assert_eq!(trim_leaders("and so on..."), "and so on...");
+        assert_eq!(trim_leaders("1.2.3.4 Section"), "1.2.3.4 Section");
+        assert_eq!(trim_leaders("U.S.A."), "U.S.A.");
+    }
+
+    #[test]
+    fn test_contents_entries_set_at_body_pitch_are_separate_blocks() {
+        // Same font, same pitch, same margin: only the page reference ends each entry. The
+        // wrapped entry stays one block across its two lines.
+        let line = |text: &str, y: f32| {
+            TextLine::from_spans(vec![TextSpan::new(
+                text.to_string(),
+                72.0,
+                y,
+                12.0,
+                "Arial-Black".to_string(),
+            )])
+        };
+        let lines = vec![
+            line("Measurement Lab worksheet ................ 3", 700.0),
+            line("Scientific Method Lab .................... 6", 686.0),
+            line("A cell is the smallest unit of life known", 672.0),
+            line(" ........................................ 33", 658.0),
+            line("Cellular Microscopy ...................... 34", 644.0),
         ];
-
-        let result = normalize_dot_leaders(spans);
-
-        assert_eq!(result.len(), 2, "leader span dropped, title and page kept");
-        assert_eq!(result[0].text, "Chapter 1");
-        assert_eq!(result[1].text, "(p.6)");
+        let blocks = LayoutAnalyzer::group_lines_into_blocks(lines);
+        let texts: Vec<String> = blocks.iter().map(|b| b.text()).collect();
+        assert_eq!(blocks.len(), 4, "{texts:#?}");
+        assert!(
+            texts[2].starts_with("A cell") && texts[2].ends_with("33"),
+            "{texts:#?}"
+        );
     }
 
     #[test]
-    fn test_normalize_dot_leaders_drops_leader_without_page_number() {
-        let spans = vec![
-            span_at("Introduction", 100.0, 70.0),
-            span_at("............................", 180.0, 150.0),
-        ];
-
-        let result = normalize_dot_leaders(spans);
-
-        assert_eq!(result.len(), 1, "leader dropped, nothing follows to keep");
-        assert_eq!(result[0].text, "Introduction");
-    }
-
-    #[test]
-    fn test_normalize_dot_leaders_merges_a_split_leader_run() {
-        // Some backends emit the leader as several adjacent dot-only spans rather
-        // than one — the run must still be treated as a single leader.
-        let spans = vec![
-            span_at("Chapter 1", 100.0, 54.0),
-            span_at("..........", 160.0, 60.0),
-            span_at("..........", 220.0, 60.0),
-            span_at("6", 290.0, 6.0),
-        ];
-
-        let result = normalize_dot_leaders(spans);
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].text, "Chapter 1");
-        assert_eq!(result[1].text, "(p.6)");
-    }
-
-    #[test]
-    fn test_normalize_dot_leaders_inline_between_two_titles() {
-        // "Chapter 1 .......... Chapter 2" — a leader with no page number on either
-        // side, e.g. two TOC entries whose own line-joining put them on one line.
-        let spans = vec![
-            span_at("Chapter 1", 100.0, 54.0),
-            span_at("....................", 160.0, 120.0),
-            span_at("Chapter 2", 290.0, 54.0),
-        ];
-
-        let result = normalize_dot_leaders(spans);
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].text, "Chapter 1");
-        assert_eq!(result[1].text, "Chapter 2");
-    }
-
-    #[test]
-    fn test_normalize_dot_leaders_preserves_short_prose_ellipsis() {
-        // A 3-dot span (e.g. a quoted trailing pause) is under the 4-dot floor and
-        // must survive untouched — mirrors render::cleanup's own prose guard.
-        let spans = vec![span_at("Wait", 100.0, 24.0), span_at("...", 130.0, 10.0)];
-
-        let result = normalize_dot_leaders(spans.clone());
-
-        assert_eq!(result.len(), spans.len());
-        assert_eq!(result[1].text, "...");
-    }
-
-    #[test]
-    fn test_normalize_dot_leaders_ignores_non_numeric_span_after_run() {
-        // A leader followed by more prose text (not a page number) — drop the
-        // leader, leave the following span exactly as it was.
-        let spans = vec![
-            span_at("Section", 100.0, 50.0),
-            span_at("........", 155.0, 60.0),
-            span_at("Appendix", 220.0, 60.0),
-        ];
-
-        let result = normalize_dot_leaders(spans);
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[1].text, "Appendix");
-    }
-
-    #[test]
-    fn test_from_spans_renders_toc_entry_end_to_end() {
+    fn test_from_spans_keeps_a_toc_leader_as_printed() {
+        // A table-of-contents leader is the document's own text: the line reads as the
+        // page prints it. Rewriting it is the opt-in cleanup's `remove_toc`, never layout's.
         let line = TextLine::from_spans(vec![
             span_at("Chapter 1", 100.0, 54.0),
             span_at("....................", 160.0, 120.0),
             span_at("6", 290.0, 6.0),
         ]);
 
-        assert_eq!(line.text(), "Chapter 1 (p.6)");
-    }
-
-    #[test]
-    fn test_from_spans_leader_only_line_is_empty() {
-        // A pure divider line of dots with no title and no page number — decorative
-        // noise, not content. Must not panic on an all-filtered span list.
-        let line =
-            TextLine::from_spans(vec![span_at("............................", 100.0, 150.0)]);
-
-        assert_eq!(line.text(), "");
-        assert!(line.spans.is_empty());
+        assert_eq!(line.text(), "Chapter 1 .................... 6");
     }
 
     /// A page set like a report with an outer-edge folio: a body column from x 68 to 255 in

@@ -747,13 +747,8 @@ fn merge_same_row_paragraphs(elements: Vec<Element>) -> Vec<Element> {
 const ROW_Y_TOLERANCE: f32 = 6.0;
 
 /// Render a table row detected with low confidence as plain paragraph text.
-///
-/// A row misdetected as a low-confidence table can still be a TOC line (title/
-/// leader/page-number spans look table-row-ish to the detector) — dot leaders
-/// are normalized the same way the `TextLine` path does, so this fallback
-/// doesn't leak raw dot runs into paragraph text.
 fn low_confidence_row_text(row: &super::table_detector::TableRowData) -> String {
-    super::layout::normalize_dot_leaders(row.spans.clone())
+    row.spans
         .iter()
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
@@ -1326,10 +1321,10 @@ mod tests {
     }
 
     #[test]
-    fn test_low_confidence_row_text_normalizes_toc_dot_leader() {
+    fn test_low_confidence_row_text_keeps_a_toc_line_as_printed() {
         // A TOC line ("Chapter 1 .......... 6") is exactly the multi-span shape
         // that can make a table detector misclassify it as a low-confidence
-        // table row — the fallback join must still normalize its dot leader.
+        // table row — the fallback join reads it as the page prints it.
         let row = TableRowData {
             y: 500.0,
             spans: vec![
@@ -1340,7 +1335,10 @@ mod tests {
             sources: Vec::new(),
         };
 
-        assert_eq!(low_confidence_row_text(&row), "Chapter 1  (p.6)");
+        assert_eq!(
+            low_confidence_row_text(&row),
+            "Chapter 1  ....................  6"
+        );
     }
 
     #[test]

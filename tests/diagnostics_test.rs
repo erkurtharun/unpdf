@@ -59,8 +59,10 @@ fn an_image_only_document_is_reported_as_a_scan() {
 
 #[test]
 fn test_toc_dot_leader_removal() {
+    // Rewriting contents leaders is `remove_toc`, on in the aggressive preset only; the
+    // standard preset keeps a contents line as printed.
     use unpdf::render::{CleanupPipeline, CleanupPreset};
-    let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+    let pipeline = CleanupPipeline::from_preset(CleanupPreset::Aggressive);
     let input = "Chapter 1: Introduction ................................ 6\n\
                  Chapter 2: Methods ...................................... 12\n\
                  Normal paragraph text without dots.";

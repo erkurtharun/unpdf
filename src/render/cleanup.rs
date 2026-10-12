@@ -27,7 +27,8 @@ pub struct CleanupOptions {
     /// Remove page numbers
     pub remove_page_numbers: bool,
 
-    /// Remove table of contents
+    /// Rewrite table-of-contents dot leaders: drop the leader and fold a trailing page
+    /// number into `(p.N)`. Off in `Standard`, which keeps a contents line as printed.
     pub remove_toc: bool,
 
     /// Fix ligatures (fi, fl, etc.)
@@ -103,7 +104,7 @@ impl CleanupOptions {
             normalize_unicode: true,
             standardize_bullets: true,
             remove_page_numbers: true,
-            remove_toc: true,
+            remove_toc: false,
             fix_ligatures: true,
             fix_hyphenation: true,
             remove_pua: false,
@@ -769,8 +770,17 @@ mod tests {
     }
 
     #[test]
-    fn test_toc_dot_leaders_inline() {
+    fn test_standard_keeps_a_contents_line_as_printed() {
+        // The leader and the page number are the document's text; rewriting them is
+        // `remove_toc`, which only the aggressive preset turns on.
         let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let text = "Chapter 1 ................................ 6";
+        assert_eq!(pipeline.process(text).trim(), text);
+    }
+
+    #[test]
+    fn test_toc_dot_leaders_inline() {
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Aggressive);
         // Inline dots between TOC entries (no page number)
         let text =
             "개요 ................................ 소개 ................................ 요구 사항";
@@ -791,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_toc_dot_leaders_preserves_prose_with_few_dots() {
-        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Standard);
+        let pipeline = CleanupPipeline::from_preset(CleanupPreset::Aggressive);
         // 4-dot prose run between spaces: must survive (threshold is 8+)
         // This verifies the inline regex doesn't eat common prose patterns.
         let text = "We waited .... and waited.";

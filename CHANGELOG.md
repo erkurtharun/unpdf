@@ -2,8 +2,20 @@
 
 ## Unreleased
 
+### Changed
+
+- **A table-of-contents line is read as printed** — `Methods ........ 12` keeps its leader and
+  its page number. Layout analysis used to drop every leader that came as a fragment of its own
+  and turn the page number after it into `(p.12)`, whatever the cleanup settings; leaders set any
+  other way (inside the title's fragment, spaced out `. . .`, the `…` character) were kept or
+  half-removed depending on how the line had been joined. Rewriting leaders is now only the
+  cleanup's `remove_toc`, which the `Aggressive` preset turns on and `Standard` no longer does.
+
 ### Fixed
 
+- Each entry of a table of contents is its own paragraph. Entries set at the body's line pitch
+  were joined into one paragraph; an entry now ends at its page reference (a leader, then a page
+  number or a roman numeral), and an entry wrapped onto a second line stays whole.
 - A table cell padded with trailing spaces to a fixed width is no longer moved into the next
   column when it starts just short of the boundary: how far it runs past the boundary is
   measured to the end of its ink, as the column-text rule already measures it.

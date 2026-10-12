@@ -803,7 +803,7 @@ impl TableDetector {
                 .into_iter()
                 .map(|contents| {
                     let text = contents.join(" ");
-                    TableCell::text(text)
+                    TableCell::text(super::layout::trim_leaders(&text).to_string())
                 })
                 .collect();
 

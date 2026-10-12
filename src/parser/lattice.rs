@@ -424,7 +424,7 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     for (r, row_cells) in cell_text.into_iter().enumerate() {
         let cells: Vec<TableCell> = row_cells
             .into_iter()
-            .map(|texts| TableCell::text(texts.join(" ")))
+            .map(|texts| TableCell::text(super::layout::trim_leaders(&texts.join(" ")).to_string()))
             .collect();
         let table_row = if r == 0 && table.header_rows > 0 {
             TableRow::header(cells)
