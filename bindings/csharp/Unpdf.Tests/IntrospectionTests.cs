@@ -128,6 +128,21 @@ public class IntrospectionTests
         Assert.Equal(0, quality.UnresolvedPageNodes);
         Assert.Equal(0, quality.SkippedObjectCount);
         Assert.Equal(0, quality.UndecodableContentStreams);
+        Assert.False(quality.XrefReconstructed);
+    }
+
+    /// <summary>
+    /// A document cut short before its cross-reference table is read from its objects, and
+    /// says it was.
+    /// </summary>
+    [Fact]
+    public void GetExtractionQuality_TruncatedPdf_ReportsXrefReconstructed()
+    {
+        var pdf = PdfFixtures.TextPdf();
+        var xref = System.Text.Encoding.ASCII.GetString(pdf).LastIndexOf("xref", System.StringComparison.Ordinal);
+        using var doc = UnpdfDocument.ParseBytes(pdf[..xref]);
+        Assert.True(doc.GetExtractionQuality().XrefReconstructed);
+        Assert.Contains("Hello", doc.ToText());
     }
 
     /// <summary>

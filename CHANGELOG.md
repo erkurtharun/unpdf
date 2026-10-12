@@ -2,7 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **A document whose cross-reference table cannot be used is read from its objects.** A file
+  cut short (no `startxref`), a table whose offsets point where its objects are not (a bad
+  save), or a damaged cross-reference stream used to fail outright with `PdfParse`. The table
+  is now rebuilt by scanning the file for its objects — objects packed in object streams
+  included — with the catalog taken from the trailers, or found by its `/Type` when none
+  survives. The rebuild is reported: `ExtractionQuality::xref_reconstructed` (C#
+  `XrefReconstructed`, Python `xref_reconstructed`), with a warning message, and
+  `DocumentIntegrity::xref_reconstructed` (a new field — breaking for struct literals). On 400
+  randomly damaged copies of four documents, 196 failed to open before and 25 do now; those 25
+  lost the object stream holding their catalog and page tree.
+
 ### Fixed
+
+- **A cross-reference chain whose `/Prev` leads back to a section already read no longer loops
+  forever.**
 
 - **A `Tf` without operands no longer panics.** The font operator read its operand by index, so
   a content stream with a bare `Tf` crashed parsing (index out of bounds) — the CLI exited and a

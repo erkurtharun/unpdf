@@ -78,6 +78,15 @@ fn zero_out_object(data: &mut [u8], obj_header: &str) {
 
 /// Point an object's xref offset past the end of the file — the shape damage takes when
 /// a file is truncated: the table survives, the object it names does not.
+/// Make the object after `obj_header` unreadable without moving anything: its dictionary opens
+/// with a byte no object starts with. The cross-reference table still points at it.
+fn break_object_body(data: &mut [u8], obj_header: &str) {
+    let header = find(data, obj_header.as_bytes(), 0);
+    let body = find(data, b"<<", header);
+    data[body..body + 2].copy_from_slice(b"))");
+}
+
+/// Point the cross-reference entry of the object after `obj_header` at nothing.
 fn break_xref_offset(data: &mut [u8], obj_header: &str) {
     let obj_offset = find(data, obj_header.as_bytes(), 0);
     let xref = find(data, b"xref\n", 0);
@@ -265,7 +274,7 @@ fn skipped_objects_alone_do_not_claim_page_loss() {
     // Damaging a font object costs no page. `skipped_object_count` should notice it while
     // `pages_incomplete` stays false — the two signals must not be conflated.
     let mut data = two_page_pdf();
-    break_xref_offset(&mut data, "7 0 obj");
+    break_object_body(&mut data, "7 0 obj");
 
     let doc = RawDocument::load(&data).unwrap();
     assert_eq!(doc.skipped_object_count(), 1);
@@ -280,4 +289,24 @@ fn skipped_objects_alone_do_not_claim_page_loss() {
         !q.pages_incomplete,
         "a lost font is not a lost page — must not warn about missing pages"
     );
+}
+
+/// An offset that points at nothing no longer costs its object: the table is rebuilt from the
+/// objects in the file, and the rebuild is reported instead of a loss.
+#[test]
+fn a_wrong_xref_offset_is_recovered_not_skipped() {
+    let mut data = two_page_pdf();
+    break_xref_offset(&mut data, "7 0 obj");
+
+    let doc = RawDocument::load(&data).unwrap();
+    assert_eq!(doc.skipped_object_count(), 0);
+    assert!(doc.xref_reconstructed());
+
+    let q = PdfParser::from_bytes(&data)
+        .unwrap()
+        .parse()
+        .unwrap()
+        .extraction_quality;
+    assert!(q.xref_reconstructed);
+    assert!(!q.pages_incomplete);
 }

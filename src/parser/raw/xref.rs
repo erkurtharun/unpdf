@@ -16,8 +16,11 @@ pub enum XrefEntry {
     Compressed(u32, u32),
 }
 
+/// An xref entry with the object it is for.
+type XrefKeyed = ((u32, u16), XrefEntry);
+
 /// Result of parsing a single xref section: entries + trailer dictionary.
-type XrefParseResult = Result<(Vec<((u32, u16), XrefEntry)>, PdfDict)>;
+type XrefParseResult = Result<(Vec<XrefKeyed>, PdfDict)>;
 
 /// Parsed xref table.
 #[derive(Debug, Default)]
@@ -80,8 +83,13 @@ pub fn parse_xref_chain(data: &[u8]) -> Result<(XrefTable, PdfDict)> {
     let mut newest_trailer: Option<PdfDict> = None;
 
     let mut offset = Some(start_offset);
+    // A `/Prev` that leads back to a section already read would loop forever.
+    let mut visited = std::collections::HashSet::new();
 
     while let Some(xref_offset) = offset {
+        if !visited.insert(xref_offset) {
+            break;
+        }
         if xref_offset >= data.len() {
             return Err(Error::PdfParse(format!(
                 "xref offset {} beyond file size",
@@ -372,6 +380,170 @@ fn skip_whitespace_simple(data: &[u8], mut pos: usize) -> usize {
 
 fn is_whitespace(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\0' | b'\x0C')
+}
+
+/// Whether an indirect object `num gen obj` begins at `offset`.
+pub fn object_header_at(data: &[u8], offset: usize, num: u32, gen: u16) -> bool {
+    header_at(data, skip_whitespace_simple(data, offset)) == Some((num, gen))
+}
+
+/// The `num gen` of an indirect object header `num gen obj` beginning exactly at `pos`.
+fn header_at(data: &[u8], pos: usize) -> Option<(u32, u16)> {
+    let digits = |from: usize| {
+        let end = data[from.min(data.len())..]
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .map_or(data.len(), |n| from + n);
+        (end > from).then_some(end)
+    };
+    let num_end = digits(pos)?;
+    let gen_start = skip_whitespace_simple(data, num_end);
+    if gen_start == num_end {
+        return None;
+    }
+    let gen_end = digits(gen_start)?;
+    let obj = skip_whitespace_simple(data, gen_end);
+    if obj == gen_end || !data[obj..].starts_with(b"obj") {
+        return None;
+    }
+    if data
+        .get(obj + 3)
+        .is_some_and(|&b| !is_whitespace(b) && !is_delimiter(b))
+    {
+        return None;
+    }
+    let num = std::str::from_utf8(&data[pos..num_end])
+        .ok()?
+        .parse()
+        .ok()?;
+    let gen = std::str::from_utf8(&data[gen_start..gen_end])
+        .ok()?
+        .parse()
+        .ok()?;
+    Some((num, gen))
+}
+
+fn is_delimiter(b: u8) -> bool {
+    matches!(
+        b,
+        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+    )
+}
+
+/// Rebuild the cross-reference table from the objects in the file, for a document whose
+/// table cannot be used: `startxref` missing (a truncated download), an offset that points
+/// at nothing, a damaged cross-reference stream.
+///
+/// Every `num gen obj` header that starts a line is an object; a number defined twice takes
+/// the later definition, as an incremental update does. Objects packed in object streams are
+/// found through the cross-reference streams that survive. The trailer is the merge of every
+/// `trailer` dictionary and cross-reference stream dictionary in file order (later wins), and
+/// when none names a `/Root` the last `/Type /Catalog` object is taken for it.
+pub fn reconstruct(data: &[u8]) -> Result<(XrefTable, PdfDict)> {
+    let mut table = XrefTable::default();
+    let mut found: Vec<((u32, u16), usize)> = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        let at_line_start = pos == 0 || matches!(data[pos - 1], b'\n' | b'\r');
+        if at_line_start && data[pos].is_ascii_digit() {
+            if let Some(key) = header_at(data, pos) {
+                found.push((key, pos));
+            }
+        }
+        pos += 1;
+    }
+    for &(key, offset) in &found {
+        table.entries.insert(key, XrefEntry::Uncompressed(offset));
+    }
+
+    let mut trailer = PdfDict::new();
+    let mut catalog = None;
+    let mut packed: Vec<XrefKeyed> = Vec::new();
+    let merge = |dict: &PdfDict, trailer: &mut PdfDict| {
+        for key in [&b"Root"[..], b"Info", b"Encrypt", b"ID"] {
+            if let Some(value) = dict_get(dict, key) {
+                trailer.insert(key.to_vec(), value.clone());
+            }
+        }
+    };
+    // Trailer dictionaries and cross-reference streams, in file order.
+    let mut sources: Vec<(usize, PdfDict, Vec<XrefKeyed>)> = Vec::new();
+    let mut search = 0;
+    while let Some(at) = find(data, b"trailer", search) {
+        search = at + b"trailer".len();
+        if let Ok((PdfObject::Dict(dict), _)) = tokenizer::parse_object(data, search) {
+            sources.push((at, dict, Vec::new()));
+        }
+    }
+    for &((num, gen), offset) in &found {
+        let Ok((object, _)) = tokenizer::parse_object(data, offset) else {
+            continue;
+        };
+        let dict = match &object {
+            PdfObject::Stream(stream) => &stream.dict,
+            PdfObject::Dict(dict) => dict,
+            _ => continue,
+        };
+        match dict_get(dict, b"Type").and_then(|t| t.as_name()) {
+            Some(b"XRef") => {
+                if let Ok((entries, dict)) = parse_xref_stream(data, offset) {
+                    sources.push((offset, dict, entries));
+                }
+            }
+            Some(b"Catalog") => catalog = Some((num, gen)),
+            // Packed objects, found from the stream itself when no cross-reference stream
+            // survives to list them. An encrypted stream does not decode here; its objects
+            // are then known only from a surviving cross-reference stream.
+            Some(b"ObjStm") => {
+                let PdfObject::Stream(stream) = &object else {
+                    continue;
+                };
+                let Ok(contents) = super::document::objstm_contents(stream) else {
+                    continue;
+                };
+                for (index, (member, obj)) in contents.into_iter().enumerate() {
+                    packed.push(((member, 0), XrefEntry::Compressed(num, index as u32)));
+                    let is_catalog = obj
+                        .as_ref()
+                        .and_then(|o| o.as_dict())
+                        .and_then(|d| dict_get(d, b"Type"))
+                        .and_then(|t| t.as_name())
+                        == Some(b"Catalog");
+                    if is_catalog {
+                        catalog = Some((member, 0));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (key, entry) in packed {
+        table.entries.entry(key).or_insert(entry);
+    }
+    sources.sort_by_key(|(at, _, _)| *at);
+    for (_, dict, entries) in &sources {
+        merge(dict, &mut trailer);
+        // Only packed objects come from a stream: an offset it records may be stale, and the
+        // scan has the offsets that are there.
+        for &(key, entry) in entries {
+            if matches!(entry, XrefEntry::Compressed(..)) && !table.entries.contains_key(&key) {
+                table.entries.insert(key, entry);
+            }
+        }
+    }
+    if dict_get(&trailer, b"Root").is_none() {
+        let (num, gen) =
+            catalog.ok_or_else(|| Error::PdfParse("no document catalog found".into()))?;
+        trailer.insert(b"Root".to_vec(), PdfObject::Reference(num, gen));
+    }
+    Ok((table, trailer))
+}
+
+fn find(data: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    data.get(from..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| from + i)
 }
 
 #[cfg(test)]

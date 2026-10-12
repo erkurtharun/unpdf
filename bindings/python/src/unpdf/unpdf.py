@@ -344,8 +344,12 @@ def get_extraction_quality(
         ``encrypted``, ``is_scan_pdf``, ``suppressed_ocr_pages``,
         ``suppressed_text_runs``, ``undecodable_content_streams``,
         ``pages_incomplete``, ``declared_page_count``,
-        ``unresolved_page_nodes``, ``skipped_object_count``,
+        ``unresolved_page_nodes``, ``skipped_object_count``, ``xref_reconstructed``,
         ``unsupported_image_count``, ``ai_fallback_count``.
+
+        ``xref_reconstructed`` is ``True`` when the file's cross-reference table
+        could not be used (cut short, wrong offsets, a damaged cross-reference
+        stream) and was rebuilt from the objects in the file.
 
         ``suppressed_text_runs`` counts text runs the font decoder could not read
         and discarded — content the document had and this output does not. Any

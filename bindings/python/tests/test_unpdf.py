@@ -442,6 +442,16 @@ class TestGetExtractionQuality:
         assert quality["unresolved_page_nodes"] == 0
         assert quality["skipped_object_count"] == 0
         assert quality["undecodable_content_streams"] == 0
+        assert quality["xref_reconstructed"] is False
+
+    def test_truncated_pdf_reports_xref_reconstructed(self, tmp_path):
+        """A document cut short before its cross-reference table is read, and says so."""
+        pdf = _text_pdf()
+        pdf_file = tmp_path / "truncated.pdf"
+        pdf_file.write_bytes(pdf[: pdf.rindex(b"xref")])
+        quality = unpdf.get_extraction_quality(str(pdf_file))
+        assert quality["xref_reconstructed"] is True
+        assert quality["char_count"] > 0
 
     def test_damaged_page_tree_reports_incomplete(self, tmp_path):
         """Silently dropped pages must be observable.

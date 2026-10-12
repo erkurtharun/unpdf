@@ -114,6 +114,15 @@ public sealed class ExtractionQuality
     public long SkippedObjectCount { get; init; }
 
     /// <summary>
+    /// The file's cross-reference table could not be used — cut short, offsets pointing where
+    /// its objects are not, a damaged cross-reference stream — and was rebuilt from the
+    /// objects in the file. The text read is what the file holds; a damaged file may hold less
+    /// than it once did, so compare <see cref="DeclaredPageCount"/> with the pages extracted.
+    /// </summary>
+    [JsonPropertyName("xref_reconstructed")]
+    public bool XrefReconstructed { get; init; }
+
+    /// <summary>
     /// Embedded images recognized as image XObjects but not extractable in the current
     /// output format (an unsupported color space or bit depth), so they were dropped.
     /// <para>

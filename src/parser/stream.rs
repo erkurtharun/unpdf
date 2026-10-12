@@ -531,6 +531,7 @@ where
     final_q.declared_page_count = integrity.declared_page_count;
     final_q.unresolved_page_nodes = integrity.unresolved_page_nodes;
     final_q.skipped_object_count = integrity.skipped_object_count;
+    final_q.xref_reconstructed = integrity.xref_reconstructed;
 
     let _ = on_event(ParseEvent::DocumentEnd {
         quality: final_q.clone(),

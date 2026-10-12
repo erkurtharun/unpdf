@@ -365,6 +365,8 @@ pub struct DocumentIntegrity {
     pub unresolved_page_nodes: usize,
     /// Objects the xref table pointed at that could not be loaded.
     pub skipped_object_count: usize,
+    /// The cross-reference table could not be used and was rebuilt from the file's objects.
+    pub xref_reconstructed: bool,
 }
 
 impl DocumentIntegrity {
@@ -706,6 +708,7 @@ impl PdfBackend for RawBackend {
             found_page_count: scan.pages.len() as u32,
             unresolved_page_nodes: scan.unresolved_nodes,
             skipped_object_count: self.doc.skipped_object_count(),
+            xref_reconstructed: self.doc.xref_reconstructed(),
         }
     }
 

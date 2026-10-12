@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use super::crypt::{self, EncryptionParams};
 use super::stream;
 use super::tokenizer::{self, dict_get, PdfDict, PdfObject, PdfStream};
-use super::xref::{self, XrefEntry};
+use super::xref::{self, XrefEntry, XrefTable};
 
 /// A parsed PDF document.
 pub struct RawDocument {
@@ -19,6 +19,27 @@ pub struct RawDocument {
     pub version: String,
     /// Objects the xref table pointed at that could not be loaded.
     skipped_objects: usize,
+    /// Whether the cross-reference table was unusable and rebuilt from the file's objects.
+    xref_reconstructed: bool,
+}
+
+/// Whether every uncompressed entry of `table` points at its own `num gen obj` header.
+fn points_at_its_objects(data: &[u8], table: &XrefTable) -> bool {
+    table
+        .entries
+        .iter()
+        .all(|(&(num, gen), entry)| match *entry {
+            XrefEntry::Uncompressed(offset) => xref::object_header_at(data, offset, num, gen),
+            XrefEntry::Compressed(..) => true,
+        })
+}
+
+/// `chain`'s trailer with what `found` adds: the chain's entries win where both have one.
+fn merge_trailers(mut chain: PdfDict, found: PdfDict) -> PdfDict {
+    for (key, value) in found {
+        chain.entry(key).or_insert(value);
+    }
+    chain
 }
 
 /// Result of walking the page tree: the pages found, and what the walk had to drop.
@@ -55,8 +76,20 @@ impl RawDocument {
         // 1. Parse PDF version from header: %PDF-X.Y
         let version = parse_version(data)?;
 
-        // 2. Parse xref chain to get table + trailer
-        let (xref_table, trailer) = xref::parse_xref_chain(data)?;
+        // 2. Parse xref chain to get table + trailer. A table that cannot be read, or that
+        //    points where its objects are not, is rebuilt from the objects in the file.
+        let (xref_table, trailer, xref_reconstructed) = match xref::parse_xref_chain(data) {
+            Ok((table, trailer)) if points_at_its_objects(data, &table) => (table, trailer, false),
+            Ok((table, trailer)) => match xref::reconstruct(data) {
+                // The chain's trailer still names the catalog, the encryption, the ID.
+                Ok((rebuilt, found)) => (rebuilt, merge_trailers(trailer, found), true),
+                Err(_) => (table, trailer, false),
+            },
+            Err(error) => match xref::reconstruct(data) {
+                Ok((rebuilt, trailer)) => (rebuilt, trailer, true),
+                Err(_) => return Err(error),
+            },
+        };
 
         // 3. Load all objects from xref entries
         let mut objects = HashMap::new();
@@ -94,6 +127,7 @@ impl RawDocument {
             trailer,
             version,
             skipped_objects,
+            xref_reconstructed,
         };
 
         // Decrypt before ObjStm extraction: ObjStm streams are encrypted and must
@@ -339,6 +373,12 @@ impl RawDocument {
         self.skipped_objects
     }
 
+    /// Whether the cross-reference table could not be used and was rebuilt by scanning the
+    /// file for its objects.
+    pub fn xref_reconstructed(&self) -> bool {
+        self.xref_reconstructed
+    }
+
     /// Walk the page tree, reporting both the pages reached and what had to be dropped.
     ///
     /// Depth-first over an explicit stack rather than by recursion: the page tree of a
@@ -473,7 +513,17 @@ fn parse_version(data: &[u8]) -> Result<String> {
     Ok(version.to_string())
 }
 
-/// Extract objects from an ObjStm (Object Stream).
+/// Extract objects from an ObjStm (Object Stream), keyed by their index in it.
+fn extract_objstm_objects(pdf_stream: &PdfStream) -> Result<HashMap<usize, PdfObject>> {
+    Ok(objstm_contents(pdf_stream)?
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, (_, obj))| obj.map(|obj| (index, obj)))
+        .collect())
+}
+
+/// What an ObjStm (Object Stream) holds, in order: each object's number, and the object when
+/// it parses.
 ///
 /// The stream contains N objects. The dictionary has:
 /// - `/N`: number of objects
@@ -481,7 +531,7 @@ fn parse_version(data: &[u8]) -> Result<String> {
 ///
 /// The header consists of N pairs of integers: obj_number byte_offset
 /// The byte_offset is relative to `/First`.
-fn extract_objstm_objects(pdf_stream: &PdfStream) -> Result<HashMap<usize, PdfObject>> {
+pub(super) fn objstm_contents(pdf_stream: &PdfStream) -> Result<Vec<(u32, Option<PdfObject>)>> {
     let n = dict_get(&pdf_stream.dict, b"N")
         .and_then(|o| o.as_i64())
         .ok_or_else(|| Error::PdfParse("ObjStm missing /N".into()))? as usize;
@@ -494,7 +544,7 @@ fn extract_objstm_objects(pdf_stream: &PdfStream) -> Result<HashMap<usize, PdfOb
 
     // Parse header: N pairs of (obj_number, byte_offset)
     let mut pos = 0;
-    let mut offsets: Vec<(u32, usize)> = Vec::with_capacity(n);
+    let mut offsets: Vec<(u32, usize)> = Vec::with_capacity(n.min(decompressed.len()));
 
     for _ in 0..n {
         pos = skip_ws(&decompressed, pos);
@@ -505,18 +555,17 @@ fn extract_objstm_objects(pdf_stream: &PdfStream) -> Result<HashMap<usize, PdfOb
         offsets.push((obj_num as u32, byte_offset as usize));
     }
 
-    // Parse each object
-    let mut result = HashMap::new();
-    for (index, &(_obj_num, byte_offset)) in offsets.iter().enumerate() {
-        let obj_pos = first + byte_offset;
-        if obj_pos < decompressed.len() {
-            if let Ok((obj, _)) = tokenizer::parse_object(&decompressed, obj_pos) {
-                result.insert(index, obj);
-            }
-        }
-    }
-
-    Ok(result)
+    Ok(offsets
+        .into_iter()
+        .map(|(obj_num, byte_offset)| {
+            let obj_pos = first + byte_offset;
+            let obj = (obj_pos < decompressed.len())
+                .then(|| tokenizer::parse_object(&decompressed, obj_pos).ok())
+                .flatten()
+                .map(|(obj, _)| obj);
+            (obj_num, obj)
+        })
+        .collect())
 }
 
 fn skip_ws(data: &[u8], mut pos: usize) -> usize {

@@ -94,6 +94,15 @@ pub struct ExtractionQuality {
     #[serde(default)]
     pub skipped_object_count: usize,
 
+    /// The document's cross-reference table could not be used — `startxref` missing (a
+    /// truncated file), offsets pointing where its objects are not, a damaged
+    /// cross-reference stream — and was rebuilt by scanning the file for its objects.
+    ///
+    /// The text read is what the file holds, but a damaged file may hold less than it
+    /// once did: compare [`Self::declared_page_count`] with the pages extracted.
+    #[serde(default)]
+    pub xref_reconstructed: bool,
+
     /// Embedded images recognized as image XObjects but not extractable in the current
     /// output format (an unsupported color space or bit depth), so they were dropped.
     ///
@@ -164,6 +173,15 @@ impl ExtractionQuality {
                  page structure is damaged.{} Extracted content is incomplete.",
                 of_declared
             ));
+        }
+        // Next: the text came out, but from a file that had to be repaired to be read at all.
+        if self.xref_reconstructed {
+            return Some(
+                "The PDF's cross-reference table was damaged and was rebuilt from the objects \
+                 in the file. The text read is what the file holds; a damaged file may hold \
+                 less than it once did."
+                    .to_string(),
+            );
         }
         if self.encrypted {
             return Some(
