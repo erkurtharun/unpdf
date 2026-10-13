@@ -619,3 +619,74 @@ fn a_short_paragraph_drawn_word_by_word_is_not_two_columns() {
     let groups = xycut_segment(&blocks, &BODY_11_5PT);
     assert_eq!(groups.len(), 1, "{groups:?}");
 }
+
+/// A byline centred under a title stands over the columns, not in the one below it. Its
+/// descent reaches below the top of the columns' first line, so no horizontal cut sets it
+/// apart; read as the middle column's first line it came after the whole left column.
+/// (Coordinates from a magazine page: three columns 167 pt wide, a 12 pt byline over the
+/// middle one.)
+#[test]
+fn a_byline_centred_over_three_columns_is_read_before_them() {
+    let mut blocks = vec![make_block(226.6, 604.5, 157.2, 12.0)];
+    for row in 0..8 {
+        let top = 596.0 - row as f32 * 12.0;
+        for x in [36.7, 222.3, 407.8] {
+            blocks.push(make_block(x, top, 167.0, 10.0));
+        }
+    }
+    let config = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 5.0,
+    };
+    let seg = xycut_partition(&blocks, &config);
+    assert_eq!(seg.groups.first(), Some(&vec![0]), "{:?}", seg.groups);
+    assert_eq!(
+        seg.groups.len(),
+        4,
+        "byline, then three columns: {:?}",
+        seg.groups
+    );
+}
+
+/// A column's own first line is not lifted out of it for standing higher than the other
+/// columns begin: it starts at its column's edge, not centred on the region.
+#[test]
+fn a_column_starting_higher_than_the_others_keeps_its_first_line() {
+    let mut blocks = vec![make_block(36.7, 608.0, 167.0, 10.0)];
+    for row in 0..8 {
+        let top = 596.0 - row as f32 * 12.0;
+        for x in [36.7, 222.3, 407.8] {
+            blocks.push(make_block(x, top, 167.0, 10.0));
+        }
+    }
+    let config = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 5.0,
+    };
+    let seg = xycut_partition(&blocks, &config);
+    assert_eq!(seg.groups.len(), 3, "three columns: {:?}", seg.groups);
+    assert!(seg.groups[0].contains(&0), "{:?}", seg.groups);
+}
+
+/// A heading over one column that starts at that column's edge is the column's, even when it
+/// falls near the centre of the region (a sidebar beside two columns puts it there).
+#[test]
+fn a_heading_at_a_columns_edge_near_the_regions_centre_stays_with_its_column() {
+    // A 17 pt sidebar at the left; the heading over the middle column starts at its edge.
+    let mut blocks = vec![make_block(277.3, 581.7, 227.7, 17.0)];
+    for row in 0..8 {
+        let top = 560.0 - row as f32 * 22.0;
+        blocks.push(make_block(18.0, top + 4.0, 210.0, 17.0));
+        blocks.push(make_block(277.3, top, 219.4, 11.0));
+        blocks.push(make_block(547.0, top, 220.0, 11.0));
+    }
+    let config = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 5.5,
+    };
+    let seg = xycut_partition(&blocks, &config);
+    assert_ne!(seg.groups.first(), Some(&vec![0]), "{:?}", seg.groups);
+}

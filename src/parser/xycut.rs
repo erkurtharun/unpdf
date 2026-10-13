@@ -177,6 +177,18 @@ fn partition_recursive(
         }
     }
 
+    // A line centred over the region and standing above where its columns begin -- a byline
+    // or a subtitle under a title -- is read before the columns, not as the first line of the
+    // one it happens to stand over.
+    if v_gap.is_some() {
+        if let Some(at) = centred_head(&blocks, min_x, max_x, config) {
+            for part in split_h(at) {
+                partition_recursive(all, &part, config, out);
+            }
+            return;
+        }
+    }
+
     let parts: Vec<Vec<usize>> = match (v_gap, h_gap) {
         (Some((v_pos, v_width)), Some((_, h_height))) if v_width >= h_height => split_v(v_pos),
         (_, Some((h_pos, _))) => split_h(h_pos),
@@ -223,6 +235,37 @@ fn partition_recursive(
     for part in parts {
         partition_recursive(all, &part, config, out);
     }
+}
+
+/// The height to cut `blocks` at to set apart their top line, when it stands over the columns
+/// below it rather than in one: centred on the region (within half an em -- the gutter's
+/// width) and with its centre above every other block's top. A column's own first line
+/// starts at its column's edge, not at the region's centre; one that stands higher than
+/// the other columns begin is still level with nothing but itself.
+fn centred_head(blocks: &[Block], min_x: f32, max_x: f32, config: &XyCutConfig) -> Option<f32> {
+    let centre = |b: &Block| b.y - b.height / 2.0;
+    let lines = lines_of(blocks, config.min_gutter);
+    let top = lines
+        .iter()
+        .max_by(|a, b| centre(&a.extent).total_cmp(&centre(&b.extent)))?;
+    let middle = (top.extent.x + top.extent.right()) / 2.0;
+    if (middle - (min_x + max_x) / 2.0).abs() > config.min_gutter {
+        return None;
+    }
+    let others = || {
+        blocks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !top.members.contains(i))
+            .map(|(_, b)| b)
+    };
+    // A heading that starts where a column's text starts is that column's, however near the
+    // region's centre it falls.
+    if others().any(|b| (b.x - top.extent.x).abs() <= config.min_gutter / 2.0) {
+        return None;
+    }
+    let others_top = others().map(|b| b.y).fold(f32::MIN, f32::max);
+    (others_top > f32::MIN && centre(&top.extent) > others_top).then_some(others_top)
 }
 
 /// `indices` split into those whose block satisfies `first` and the rest, in that order.

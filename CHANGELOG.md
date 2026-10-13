@@ -15,6 +15,11 @@
   body text the offset is the same on every line and changed nothing; for a display title the
   box reached as far below the title as the title is tall, over the first rows of the columns
   under it, which were then read across both columns before the columns split.
+- **A line centred over columns is read before them.** A byline or subtitle centred under a
+  title, standing over the middle column only and so close above the columns that no space
+  sets it apart, was read as that column's first line — after the whole first column. A line
+  centred on the region and standing above where every column begins is now read on its own,
+  before the columns; a column's own first line, which starts at its column's edge, is not.
 
 ## 0.43.0 — 2026-10-13
 
