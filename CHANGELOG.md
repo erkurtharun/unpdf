@@ -28,6 +28,13 @@
   line of its own — never merged into the text read left to right beside it, and never taken
   for a heading. A row of labels turned the same way reads left to right as one line.
 
+- **Two columns under a short running head are read one after the other.** A running head
+  centred over the gutter, or the first half of a running foot, is as narrow as a column's
+  line, so it closed the gutter on its own line where only wide lines had been expected to: the
+  page was read line by line across both columns (or its first lines were). A gutter is now also
+  found past at most two lines that reach well across it, and those lines are read as bands of
+  their own.
+
 ### Changed
 
 - **Breaking: `TextSpan` has a `direction` field** — the direction its baseline runs on the page,

@@ -302,9 +302,17 @@ fn spanning_band(
     if narrow.len() * 2 <= blocks.len() {
         return None;
     }
-    let narrow_min = narrow.iter().map(|b| b.x).fold(f32::MAX, f32::min);
-    let narrow_max = narrow.iter().map(|b| b.right()).fold(f32::MIN, f32::max);
-    let (gutter, _) = find_best_vertical_gap(&narrow, narrow_min, narrow_max, config)?;
+    let gutter_among = |set: &[Block]| {
+        let lo = set.iter().map(|b| b.x).fold(f32::MAX, f32::min);
+        let hi = set.iter().map(|b| b.right()).fold(f32::MIN, f32::max);
+        find_best_vertical_gap(set, lo, hi, config).map(|(gutter, _)| gutter)
+    };
+    // A short line set across the columns -- a running head centred over the gutter, the
+    // first half of a running foot -- is as narrow as a column's line and closes the gutter
+    // among the narrow blocks on its own line. When no gutter shows, it is looked for past the
+    // few lines that cross it (see `gutter_past_few_lines`).
+    let gutter =
+        gutter_among(&narrow).or_else(|| gutter_past_few_lines(&narrow, config, &gutter_among))?;
 
     // Lines of a text column fill most of their column; the fragments a table of
     // contents (entries | page numbers) or a chart's labels leave either side of a
@@ -330,6 +338,88 @@ fn spanning_band(
         .filter(|b| b.x < gutter && b.right() > gutter)
         .max_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))?;
     Some((spanning.y, spanning.bottom()))
+}
+
+/// The most lines a channel may be crossed by and still be looked at as a gutter in
+/// [`gutter_past_few_lines`]: a running head and a running foot.
+const GUTTER_CROSSING_LINES: usize = 2;
+
+/// How far past a gutter, on each side, a line crossing it must reach to be set across the
+/// columns, in multiples of [`XyCutConfig::min_gutter`] (see [`gutter_past_few_lines`]). A
+/// column's line that only pokes into a channel is not one.
+const GUTTER_CROSSING_REACH: f32 = 2.0;
+
+/// A gutter among `blocks` once the few lines set across it are set aside: a vertical channel
+/// at least `min_gutter` wide that at most [`GUTTER_CROSSING_LINES`] lines cross, which
+/// `gutter_among` finds a gutter in once those lines are gone -- and which each of them
+/// reaches well past on both sides ([`GUTTER_CROSSING_REACH`]).
+fn gutter_past_few_lines(
+    blocks: &[Block],
+    config: &XyCutConfig,
+    gutter_among: &dyn Fn(&[Block]) -> Option<f32>,
+) -> Option<f32> {
+    let lines = lines_of(blocks, config.min_gutter);
+    let most_crossing = GUTTER_CROSSING_LINES;
+    let lo = lines.iter().map(|l| l.extent.x).fold(f32::MAX, f32::min);
+    let hi = lines
+        .iter()
+        .map(|l| l.extent.right())
+        .fold(f32::MIN, f32::max);
+    let resolution = 2.0;
+    let bins = (((hi - lo) / resolution) as usize).max(1);
+    let mut coverage = vec![0usize; bins];
+    for line in &lines {
+        let start = ((line.extent.x - lo) / resolution) as usize;
+        let end = (((line.extent.right() - lo) / resolution) as usize).min(bins);
+        for slot in coverage.iter_mut().take(end).skip(start) {
+            *slot += 1;
+        }
+    }
+    // Runs of bins crossed by few lines, widest first.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut start = None;
+    for (i, &count) in coverage
+        .iter()
+        .chain(std::iter::once(&usize::MAX))
+        .enumerate()
+    {
+        match (count <= most_crossing, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                runs.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    runs.retain(|&(s, e)| (e - s) as f32 * resolution >= config.min_gutter);
+    runs.sort_by_key(|&(s, e)| std::cmp::Reverse(e - s));
+    runs.into_iter().find_map(|(s, e)| {
+        let centre = lo + (s + e) as f32 * resolution / 2.0;
+        let crossing: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.extent.x < centre && l.extent.right() > centre)
+            .collect();
+        if crossing.is_empty() || crossing.len() > most_crossing {
+            return None;
+        }
+        let set_aside: Vec<usize> = crossing
+            .iter()
+            .flat_map(|l| l.members.iter().copied())
+            .collect();
+        let rest: Vec<Block> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !set_aside.contains(i))
+            .map(|(_, b)| *b)
+            .collect();
+        let gutter = gutter_among(&rest)?;
+        let reach = config.min_gutter * GUTTER_CROSSING_REACH;
+        crossing
+            .iter()
+            .all(|l| l.extent.x <= gutter - reach && l.extent.right() >= gutter + reach)
+            .then_some(gutter)
+    })
 }
 
 /// A line of text: blocks on one baseline that sit a word space apart or closer.

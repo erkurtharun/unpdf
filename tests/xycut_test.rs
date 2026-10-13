@@ -251,6 +251,52 @@ fn a_block_spanning_the_gutter_splits_the_page_into_bands() {
     );
 }
 
+/// A short running head centred over the gutter, a line or two above two columns: as
+/// narrow as a column's line, it closes the gutter on its own line all the same. It is
+/// banded off, and the columns read one after the other -- not their first lines across.
+#[test]
+fn a_short_running_head_over_the_gutter_is_banded_off() {
+    let mut blocks = vec![make_block(271.0, 797.0, 56.0, 10.0)];
+    for i in 0..6 {
+        let y = 761.0 - i as f32 * 12.6;
+        blocks.push(make_block(57.0, y, 229.0, 11.0));
+        blocks.push(make_block(312.0, y, 229.0, 11.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_11PT);
+    let order: Vec<(f32, f32)> = groups.iter().map(|g| (g[0].x, g[0].y)).collect();
+    assert_eq!(
+        order,
+        vec![(271.0, 797.0), (57.0, 761.0), (312.0, 761.0)],
+        "{groups:?}"
+    );
+}
+
+/// The same with a running foot below whose first half -- as narrow as a column's line --
+/// crosses the gutter too: two short lines across it, both banded off.
+#[test]
+fn a_running_head_and_foot_over_the_gutter_are_banded_off() {
+    let mut blocks = vec![make_block(271.0, 797.0, 56.0, 10.0)];
+    for i in 0..6 {
+        let y = 761.0 - i as f32 * 12.6;
+        blocks.push(make_block(57.0, y, 229.0, 11.0));
+        blocks.push(make_block(312.0, y, 229.0, 11.0));
+    }
+    blocks.push(make_block(219.0, 660.0, 236.0, 10.0));
+    blocks.push(make_block(470.0, 660.0, 70.0, 10.0));
+    let groups = xycut_segment(&blocks, &BODY_11PT);
+    let order: Vec<(f32, f32)> = groups.iter().map(|g| (g[0].x, g[0].y)).collect();
+    assert_eq!(
+        order,
+        vec![
+            (271.0, 797.0),
+            (57.0, 761.0),
+            (312.0, 761.0),
+            (219.0, 660.0)
+        ],
+        "{groups:?}"
+    );
+}
+
 /// Single-column text whose short lines (paragraph ends) happen to leave a channel:
 /// the short lines are a minority, so wide lines are not cut into bands.
 #[test]
