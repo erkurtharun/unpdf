@@ -375,6 +375,8 @@ fn grid_of(
         right_x: col_bounds[col_bounds.len() - 1],
         row_bounds,
         col_bounds,
+        // Columns found from the text, not drawn: no edge is evidence of a merge.
+        rules: Vec::new(),
     })
 }
 
@@ -558,6 +560,7 @@ mod tests {
             right_x: 410.0,
             row_bounds: vec![510.0, 470.0, 430.0],
             col_bounds: vec![90.0, 250.0, 410.0],
+            rules: Vec::new(),
         };
         assert!(grids(&rule_stacks(&rules), &spans, &[lattice]).is_empty());
     }

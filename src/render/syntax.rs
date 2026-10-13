@@ -16,7 +16,7 @@
 //! Table block is already fully materialized by the time either renderer sees it.
 
 use super::{RenderOptions, TableFallback};
-use crate::model::{Alignment, Block, InlineContent, Table, TableRow, TextStyle};
+use crate::model::{Alignment, Block, InlineContent, Table, TableCell, TableRow, TextStyle};
 use unparser_shared::markdown::emphasis_span;
 
 /// Whether `block` is a list item.
@@ -120,17 +120,26 @@ pub(super) fn render_table(table: &Table, options: &RenderOptions) -> String {
     }
 }
 
+/// A table as Markdown. Markdown has no merged cells: a merged cell's text is in the position
+/// it starts at and the positions it covers are empty, as in [`Table::to_csv`], so every row
+/// is as wide as the table and each value stays under its heading.
 fn render_table_markdown(table: &Table) -> String {
-    let col_count = table.column_count();
-    if col_count == 0 {
+    let width = table.column_count();
+    if width == 0 {
         return String::new();
     }
 
     let mut output = String::new();
-    for (i, row) in table.rows.iter().enumerate() {
+    for (i, (row, starts)) in table.rows.iter().zip(table.cell_columns()).enumerate() {
+        let mut slots: Vec<Option<&TableCell>> = vec![None; width];
+        for (cell, c) in row.cells.iter().zip(starts) {
+            if let Some(slot) = slots.get_mut(c) {
+                *slot = Some(cell);
+            }
+        }
         output.push('|');
-        for cell in &row.cells {
-            let content = cell.plain_text().replace('\n', " ");
+        for slot in &slots {
+            let content = slot.map_or(String::new(), |cell| cell.plain_text().replace('\n', " "));
             output.push_str(&format!(" {} |", content.trim()));
         }
         output.push('\n');
@@ -138,8 +147,8 @@ fn render_table_markdown(table: &Table) -> String {
         // Add separator after header row
         if i == 0 || (table.header_rows > 0 && i == table.header_rows as usize - 1) {
             output.push('|');
-            for cell in &row.cells {
-                let align_marker = match cell.alignment {
+            for slot in &slots {
+                let align_marker = match slot.map_or(Alignment::Left, |cell| cell.alignment) {
                     Alignment::Left => " --- |",
                     Alignment::Center => " :---: |",
                     Alignment::Right => " ---: |",
@@ -309,6 +318,32 @@ mod tests {
         merged.add_row(TableRow::new(vec![TableCell::text("Merged").colspan(2)]));
         let output = render_table(&merged, &options);
         assert!(output.contains("<table>") && output.contains("colspan=\"2\""));
+    }
+
+    /// A merged cell takes one position of its row and leaves the ones it covers empty: every
+    /// row is as wide as the table, and the values after a merge stay under their headings.
+    #[test]
+    fn test_render_table_markdown_keeps_merged_rows_full_width() {
+        let mut table = Table::new();
+        table.header_rows = 1;
+        table.add_row(TableRow::header(vec![
+            TableCell::text("Item").colspan(2),
+            TableCell::text("2020"),
+        ]));
+        table.add_row(TableRow::new(vec![
+            TableCell::text("GMV").rowspan(2),
+            TableCell::text("A"),
+            TableCell::text("1"),
+        ]));
+        table.add_row(TableRow::new(vec![
+            TableCell::text("B"),
+            TableCell::text("2"),
+        ]));
+        let output = render_table(&table, &RenderOptions::default());
+        assert_eq!(
+            output,
+            "| Item |  | 2020 |\n| --- | --- | --- |\n| GMV | A | 1 |\n|  | B | 2 |\n\n"
+        );
     }
 
     #[test]

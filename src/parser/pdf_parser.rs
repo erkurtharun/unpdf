@@ -852,6 +852,7 @@ fn extract_page_with_tables_fn(
     let mut lattice_consumed = std::collections::HashSet::new();
     for grid in &lattice_grids {
         let grid = &super::lattice::with_header_above(grid, &spans);
+        let grid = &super::lattice::with_unruled_rows(grid, &spans);
         if let Some((table, consumed)) = super::lattice::build_table(grid, &spans) {
             let extent = Extent {
                 top: grid.top_y,

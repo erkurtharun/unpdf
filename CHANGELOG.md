@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A table ruled without a frame keeps its outer columns when its rules are drawn cell by
+  cell.** A table whose rules run between its cells and past the outer columns, with no frame
+  on the sides, is bounded by its rules' ends. That was decided by whether every rule overhangs
+  the outer column rules — and a rule drawn in pieces, one per cell, has pieces starting at
+  every column rule, none of which but the first overhangs. The first and last columns then
+  fell out of the table: their header cells were appended to the text above, their data cells
+  became a second table or loose text. A rule is now what is drawn along one line, however
+  many pieces it is drawn in; a rule may also stop at a column rule (the edge of a label that
+  spans rows in the open column).
+- **A Markdown table with merged cells keeps every row as wide as the table.** A row holding a
+  cell that spans columns, or a row under a cell spanning rows, was written with fewer cells
+  than the header, so the values after the merge shifted out from under their headings. The
+  merged cell's text is now in the position it starts at and the positions it covers are
+  empty, as in `Table::to_csv`.
+
+### Changed
+
+- **Merged cells of a ruled table are reported.** A cell with nothing drawn along an edge its
+  neighbours are ruled at — a header over two columns, a row label over three rows — is one
+  cell with `rowspan`/`colspan` (JSON, and an HTML table under `TableFallback::Html`), its text
+  read in one piece (`구 분`, not `구` | `분`). Before, each position was a cell of its own and a
+  label set across a missing rule was split between them. Shading counts as drawn (a banded
+  table's rows stay rows), and two pieces of text that stand apart — two labels centred in their
+  own columns of one header band, a label on each row of a box of row labels — stay two cells;
+  an empty position between two labels joins one of them.
+  In Markdown a merged cell's text is in the first position it covers.
+- **A table ruled above, under its header and below, but not between its body rows, has a row
+  per record.** Its grid had one body row, so every value of a column came out in one cell. A
+  row under the first is divided into its lines when it has three lines or more and three
+  columns or more hold text, each with a line on two thirds of the row's lines or more. Two lists
+  side by side in one ruled row, and a cell wrapping over several lines beside short ones, are
+  left as one row.
+
 ## 0.42.0 — 2026-10-13
 
 ### Added

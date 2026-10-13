@@ -63,6 +63,13 @@ pub struct LatticeGrid {
     pub row_bounds: Vec<f32>,
     /// Column boundary X positions, ascending.
     pub col_bounds: Vec<f32>,
+    /// What the grid was drawn with, the pieces of each line joined ([`joined_edges`]): its
+    /// rules, the edges of its filled areas (not `ruled`), and each open side as a rule along
+    /// it -- where a table drawn without a frame ends, its rules' ends bound it as a frame
+    /// would. They tell which cell edges are drawn: a cell with nothing drawn along an edge its
+    /// neighbours have is merged across it (see [`merged_cells`]). Empty for a grid whose
+    /// boundaries were not all drawn (see `ruled_rows`): it has no merged cells.
+    pub(crate) rules: Vec<AxisSegment>,
 }
 
 impl LatticeGrid {
@@ -109,10 +116,10 @@ fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Opt
     let mut row_positions = boundaries(component, Axis::Horizontal, &x_rules, config)?;
     let mut col_positions = boundaries(component, Axis::Vertical, &y_rules, config)?;
     // A table ruled only between its cells, with no frame, ends where its rules do.
-    let open_rows = open_sides(component, Axis::Vertical, &row_positions);
-    let open_columns = open_sides(component, Axis::Horizontal, &col_positions);
-    row_positions.extend(open_rows);
-    col_positions.extend(open_columns);
+    let open_rows = open_sides(component, Axis::Vertical, &row_positions, config);
+    let open_columns = open_sides(component, Axis::Horizontal, &col_positions, config);
+    row_positions.extend(open_rows.iter().copied());
+    col_positions.extend(open_columns.iter().copied());
     // Descending: PDF y increases upward, and reading order is top (high y) to bottom.
     row_positions.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     col_positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -129,13 +136,45 @@ fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Opt
         return None;
     }
 
+    let (top_y, bottom_y) = (*row_positions.first()?, *row_positions.last()?);
+    let (left_x, right_x) = (*col_positions.first()?, *col_positions.last()?);
+    let mut rules = Vec::new();
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        for ruled in [true, false] {
+            rules.extend(joined_edges(
+                component,
+                axis,
+                ruled,
+                config.cluster_tolerance,
+            ));
+        }
+    }
+    let side = |axis, pos, lo, hi| AxisSegment {
+        axis,
+        pos,
+        lo,
+        hi,
+        ruled: true,
+    };
+    rules.extend(
+        open_rows
+            .iter()
+            .map(|&y| side(Axis::Horizontal, y, left_x, right_x)),
+    );
+    rules.extend(
+        open_columns
+            .iter()
+            .map(|&x| side(Axis::Vertical, x, bottom_y, top_y)),
+    );
+
     Some(LatticeGrid {
-        top_y: *row_positions.first()?,
-        bottom_y: *row_positions.last()?,
-        left_x: *col_positions.first()?,
-        right_x: *col_positions.last()?,
+        top_y,
+        bottom_y,
+        left_x,
+        right_x,
         row_bounds: row_positions,
         col_bounds: col_positions,
+        rules,
     })
 }
 
@@ -231,37 +270,104 @@ const FILL_TOUCH: f32 = 2.0;
 const OPEN_SIDE_MIN: f32 = 12.0;
 
 /// The outer boundaries of a grid drawn without a frame: where the rules of `across` — the
-/// axis whose rules run across the `positions` — all run on past the outermost of those
-/// positions, the grid's last row or column lies between that position and the rules' ends.
+/// axis whose rules run across the `positions` — run on past the outermost of those positions,
+/// the grid's last row or column lies between that position and the rules' ends.
 ///
 /// Rules set only between the cells of a table (booktabs-style rules under the header and
 /// between rows, column rules between columns) leave its outer rows and columns open: the
-/// first column has no rule on its left, the last row none below it. Each rule still spans the
-/// whole table, so their ends bound it. Taken by the rules' own ends — the nearest of them, so
-/// every rule reaches the boundary — a side is added only when every rule across it overhangs
-/// by at least [`OPEN_SIDE_MIN`]: a framed table's rules stop at the frame.
-fn open_sides(component: &[AxisSegment], across: Axis, positions: &[f32]) -> Vec<f32> {
-    let rules: Vec<&AxisSegment> = component
-        .iter()
-        .filter(|s| s.axis == across && s.ruled)
-        .collect();
+/// first column has no rule on its left, the last row none below it. The rules across still
+/// span the whole table, so their ends bound it. A side is open when the rules at both ends of
+/// the table overhang it by at least [`OPEN_SIDE_MIN`], and every other rule across either
+/// overhangs it too or stops at one of the `positions` — the edge of a cell that spans rows in
+/// the open column (a row label over three rows has no rules between them in its own column).
+/// The boundary is the nearest end of the overhanging rules, so every one of them reaches it.
+/// A framed table's rules stop at the frame and none overhang.
+///
+/// A rule is what is drawn along one line, however many pieces it is drawn in: a table whose
+/// rules are drawn cell by cell has, under its header, a piece starting at each column rule —
+/// counted as rules of their own, none of those but the first overhangs, and the table lost
+/// both its outer columns.
+fn open_sides(
+    component: &[AxisSegment],
+    across: Axis,
+    positions: &[f32],
+    config: &LatticeConfig,
+) -> Vec<f32> {
+    let rules = joined_edges(component, across, true, config.cluster_tolerance);
     let (Some(first), Some(last)) = (
         positions.iter().copied().reduce(f32::min),
         positions.iter().copied().reduce(f32::max),
     ) else {
         return Vec::new();
     };
-    if rules.is_empty() {
+    let (Some(outer_low), Some(outer_high)) = (
+        rules.iter().map(|r| r.pos).reduce(f32::min),
+        rules.iter().map(|r| r.pos).reduce(f32::max),
+    ) else {
         return Vec::new();
-    }
+    };
+    let at_a_boundary = |end: f32| {
+        positions
+            .iter()
+            .any(|&p| (p - end).abs() <= config.cluster_tolerance)
+    };
     let mut sides = Vec::new();
-    if rules.iter().all(|s| s.lo <= first - OPEN_SIDE_MIN) {
-        sides.push(rules.iter().map(|s| s.lo).fold(f32::MIN, f32::max));
-    }
-    if rules.iter().all(|s| s.hi >= last + OPEN_SIDE_MIN) {
-        sides.push(rules.iter().map(|s| s.hi).fold(f32::MAX, f32::min));
+    for low in [true, false] {
+        let overhangs = |r: &AxisSegment| {
+            if low {
+                r.lo <= first - OPEN_SIDE_MIN
+            } else {
+                r.hi >= last + OPEN_SIDE_MIN
+            }
+        };
+        let end = |r: &AxisSegment| if low { r.lo } else { r.hi };
+        let outer_overhangs = |pos: f32| {
+            rules
+                .iter()
+                .any(|r| (r.pos - pos).abs() <= config.cluster_tolerance && overhangs(r))
+        };
+        if outer_overhangs(outer_low)
+            && outer_overhangs(outer_high)
+            && rules.iter().all(|r| overhangs(r) || at_a_boundary(end(r)))
+        {
+            // The nearest end, so every overhanging rule reaches it.
+            let ends = rules.iter().filter(|r| overhangs(r)).map(end);
+            sides.extend(if low {
+                ends.reduce(f32::max)
+            } else {
+                ends.reduce(f32::min)
+            });
+        }
     }
     sides
+}
+
+/// The segments of `axis` that are rules (`ruled`) or filled areas' edges (not), with the
+/// pieces of each line joined: collinear pieces that overlap or abut (within `tolerance`) are
+/// one rule.
+fn joined_edges(
+    component: &[AxisSegment],
+    axis: Axis,
+    ruled: bool,
+    tolerance: f32,
+) -> Vec<AxisSegment> {
+    let mut pieces: Vec<AxisSegment> = component
+        .iter()
+        .filter(|s| s.axis == axis && s.ruled == ruled)
+        .copied()
+        .collect();
+    pieces.sort_by(|a, b| a.pos.total_cmp(&b.pos).then(a.lo.total_cmp(&b.lo)));
+    let mut rules: Vec<AxisSegment> = Vec::new();
+    for piece in pieces {
+        match rules.iter_mut().find(|r| r.touches(&piece, tolerance)) {
+            Some(rule) => {
+                rule.lo = rule.lo.min(piece.lo);
+                rule.hi = rule.hi.max(piece.hi);
+            }
+            None => rules.push(piece),
+        }
+    }
+    rules
 }
 
 /// The positions of the ruled segments of `axis`.
@@ -391,45 +497,53 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
         consumed.push(i);
     }
 
-    // A cell reads line by line, a superscript with the line it marks (`0.31*`,
-    // not `* 0.31`) — the same rows stream-mode detection builds.
-    let cell_text: Vec<Vec<Vec<String>>> = cell_spans
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|cell| {
-                    group_into_rows(&cell, CELL_LINE_TOLERANCE)
-                        .into_iter()
-                        .map(|line| TextLine::from_spans(line.spans).text().trim().to_string())
-                        .filter(|text| !text.is_empty())
-                        .collect()
-                })
-                .collect()
-        })
-        .collect();
+    // A merged cell is read as one: the text of the positions it covers together, line by
+    // line, so a label set across the rule its neighbours have reads in one piece.
+    let mut cells: Vec<(Merge, Vec<String>)> = Vec::new();
+    for merge in merged_cells(grid, &cell_spans) {
+        let spans: Vec<TextSpan> = (merge.row..merge.row + merge.rows)
+            .flat_map(|r| (merge.col..merge.col + merge.cols).map(move |c| (r, c)))
+            .flat_map(|(r, c)| cell_spans[r][c].iter().cloned())
+            .collect();
+        // A cell reads line by line, a superscript with the line it marks (`0.31*`,
+        // not `* 0.31`) -- the same rows stream-mode detection builds.
+        let lines: Vec<String> = group_into_rows(&spans, CELL_LINE_TOLERANCE)
+            .into_iter()
+            .map(|line| TextLine::from_spans(line.spans).text().trim().to_string())
+            .filter(|text| !text.is_empty())
+            .collect();
+        cells.push((merge, lines));
+    }
 
-    let non_empty = cell_text.iter().flatten().filter(|c| !c.is_empty()).count();
-    let occupancy = non_empty as f32 / (rows * cols) as f32;
+    let non_empty = cells.iter().filter(|(_, lines)| !lines.is_empty()).count();
+    let occupancy = non_empty as f32 / cells.len() as f32;
     if occupancy < MIN_OCCUPANCY {
         return None;
     }
     // One column is a table only as a list of items: every cell one line. A column whose
     // cells hold paragraphs is text drawn in boxes, and reads as text.
-    if cols == 1 && !cell_text.iter().all(|row| row[0].len() == 1) {
+    if cols == 1 && !cells.iter().all(|(_, lines)| lines.len() == 1) {
         return None;
     }
 
     let mut table = Table::new();
     table.header_rows = if rows > 1 { 1 } else { 0 };
-    for (r, row_cells) in cell_text.into_iter().enumerate() {
-        let cells: Vec<TableCell> = row_cells
-            .into_iter()
-            .map(|texts| TableCell::text(super::layout::trim_leaders(&texts.join(" ")).to_string()))
+    for r in 0..rows {
+        let row_cells: Vec<TableCell> = cells
+            .iter()
+            .filter(|(merge, _)| merge.row == r)
+            .map(|(merge, lines)| {
+                let mut cell =
+                    TableCell::text(super::layout::trim_leaders(&lines.join(" ")).to_string());
+                cell.rowspan = u8::try_from(merge.rows).unwrap_or(u8::MAX);
+                cell.colspan = u8::try_from(merge.cols).unwrap_or(u8::MAX);
+                cell
+            })
             .collect();
         let table_row = if r == 0 && table.header_rows > 0 {
-            TableRow::header(cells)
+            TableRow::header(row_cells)
         } else {
-            TableRow::new(cells)
+            TableRow::new(row_cells)
         };
         table.add_row(table_row);
     }
@@ -440,6 +554,174 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     );
 
     Some((table, consumed))
+}
+
+/// Whether the text of two positions side by side, `left` and `right` of the boundary at `x`,
+/// can be one cell's: one side is empty, a piece of text runs across `x` -- more than a font
+/// size into each side, since a label in a band without the rule may start a little before
+/// its column -- or a line goes on from one side to the other within a font size (`구 분` set
+/// across the boundary, a word to each side of it). Labels centred in their own columns stand
+/// further apart than that.
+fn reads_across(left: &[TextSpan], right: &[TextSpan], x: f32) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return true;
+    }
+    let runs_over = left.iter().chain(right).any(|s| {
+        let (start, end) = s.ink_extent();
+        start < x - s.font_size && end > x + s.font_size
+    });
+    runs_over
+        || left.iter().any(|a| {
+            right.iter().any(|b| {
+                let size = a.font_size.max(b.font_size);
+                (a.y - b.y).abs() <= size * CELL_LINE_TOLERANCE
+                    && b.ink_extent().0 - a.ink_extent().1 <= size
+            })
+        })
+}
+
+/// A cell of a grid: the row and column it starts in and how many of each it covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Merge {
+    row: usize,
+    col: usize,
+    rows: usize,
+    cols: usize,
+}
+
+/// The cells of `grid`, merged where its rules say so, in reading order (top row first, left
+/// to right).
+///
+/// Two neighbouring positions of the grid are one cell when the edge between them is not
+/// drawn while the edges it runs between are: neither a rule nor a filled area's edge lies
+/// along it (a banded table's rows are bounded by their shading), and rules cross both its
+/// ends. The boundary is there -- other rows (or columns) are drawn at it -- so this cell runs
+/// across it, like a header over two columns or a row label over three rows. An edge whose
+/// ends are not drawn either -- a header row standing above the top rule, a grid whose
+/// boundaries were not all drawn -- is no evidence of a merge.
+///
+/// The text decides too. Two positions side by side are one cell only when one of them is
+/// empty or their text reads as one ([`reads_across`]) -- two labels each standing in its own
+/// column of a shaded header band, with no rule between them, are two cells. A merge down a
+/// column takes in the text of one position at most: a column of row labels drawn in one box,
+/// while the columns beside it are ruled row by row, holds a label per row, each on its row's
+/// line -- and a label set over two lines of a cell spanning rows sits on the same lines, so
+/// the drawing cannot tell them apart.
+///
+/// A merge has to make a rectangle: positions joined in any other shape are left as cells of
+/// their own, since a cell is a rectangle and the drawing is then something else.
+fn merged_cells(grid: &LatticeGrid, cell_spans: &[Vec<Vec<TextSpan>>]) -> Vec<Merge> {
+    let rows = grid.row_count();
+    let cols = grid.column_count();
+    let tolerance = LatticeConfig::default().cluster_tolerance;
+    // Whether a rule or a filled edge of `axis` at `pos` runs along `[lo, hi]` -- more than
+    // touching it.
+    let drawn_along = |axis: Axis, pos: f32, lo: f32, hi: f32| {
+        grid.rules.iter().any(|r| {
+            r.axis == axis
+                && (r.pos - pos).abs() <= tolerance
+                && r.hi.min(hi) - r.lo.max(lo) > tolerance
+        })
+    };
+    // Whether a rule of `axis` at `pos` reaches the point `at` along it.
+    let crossed_at = |axis: Axis, pos: f32, at: f32| {
+        grid.rules.iter().any(|r| {
+            r.ruled
+                && r.axis == axis
+                && (r.pos - pos).abs() <= tolerance
+                && at >= r.lo - tolerance
+                && at <= r.hi + tolerance
+        })
+    };
+    // Whether anything of `axis` is drawn at `pos` anywhere: a boundary found from the text
+    // (see [`with_unruled_rows`]) is drawn nowhere, and no evidence of a merge.
+    let drawn_at = |axis: Axis, pos: f32| {
+        grid.rules
+            .iter()
+            .any(|r| r.axis == axis && (r.pos - pos).abs() <= tolerance)
+    };
+    let joins_right = |r: usize, c: usize| {
+        let x = grid.col_bounds[c + 1];
+        let (y_top, y_bottom) = (grid.row_bounds[r], grid.row_bounds[r + 1]);
+        drawn_at(Axis::Vertical, x)
+            && !drawn_along(Axis::Vertical, x, y_bottom, y_top)
+            && crossed_at(Axis::Horizontal, y_top, x)
+            && crossed_at(Axis::Horizontal, y_bottom, x)
+            && reads_across(&cell_spans[r][c], &cell_spans[r][c + 1], x)
+    };
+    let joins_below = |r: usize, c: usize| {
+        let y = grid.row_bounds[r + 1];
+        let (x_left, x_right) = (grid.col_bounds[c], grid.col_bounds[c + 1]);
+        drawn_at(Axis::Horizontal, y)
+            && !drawn_along(Axis::Horizontal, y, x_left, x_right)
+            && crossed_at(Axis::Vertical, x_left, y)
+            && crossed_at(Axis::Vertical, x_right, y)
+    };
+    let has_text = |i: usize| !cell_spans[i / cols][i % cols].is_empty();
+
+    fn find(parent: &mut [usize], i: usize) -> usize {
+        let mut root = i;
+        while parent[root] != root {
+            root = parent[root];
+        }
+        parent[i] = root;
+        root
+    }
+    let mut parent: Vec<usize> = (0..rows * cols).collect();
+    // Whether each position's merge so far holds text: a merge down a column takes in at most
+    // one piece of it, so an empty position between two labels joins one of them, not both.
+    let mut texted: Vec<bool> = (0..rows * cols).map(has_text).collect();
+    let mut union = |a: usize, b: usize, one_text: bool| {
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra != rb && !(one_text && texted[ra] && texted[rb]) {
+            let (keep, gone) = (ra.min(rb), ra.max(rb));
+            parent[gone] = keep;
+            texted[keep] |= texted[gone];
+        }
+    };
+    for r in 0..rows {
+        for c in 0..cols {
+            if c + 1 < cols && joins_right(r, c) {
+                union(r * cols + c, r * cols + c + 1, false);
+            }
+            if r + 1 < rows && joins_below(r, c) {
+                union(r * cols + c, (r + 1) * cols + c, true);
+            }
+        }
+    }
+
+    let mut members: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
+        std::collections::BTreeMap::new();
+    for i in 0..rows * cols {
+        members
+            .entry(find(&mut parent, i))
+            .or_default()
+            .push((i / cols, i % cols));
+    }
+    let mut cells: Vec<Merge> = Vec::new();
+    for positions in members.into_values() {
+        let row = positions.iter().map(|p| p.0).min().unwrap_or(0);
+        let col = positions.iter().map(|p| p.1).min().unwrap_or(0);
+        let rows = positions.iter().map(|p| p.0).max().unwrap_or(0) + 1 - row;
+        let cols = positions.iter().map(|p| p.1).max().unwrap_or(0) + 1 - col;
+        if positions.len() == rows * cols {
+            cells.push(Merge {
+                row,
+                col,
+                rows,
+                cols,
+            });
+        } else {
+            cells.extend(positions.into_iter().map(|(row, col)| Merge {
+                row,
+                col,
+                rows: 1,
+                cols: 1,
+            }));
+        }
+    }
+    cells.sort_by_key(|m| (m.row, m.col));
+    cells
 }
 
 /// The column (index into the columns `col_bounds` bound) that holds `span` when the text of
@@ -532,6 +814,88 @@ pub(crate) fn with_header_above(grid: &LatticeGrid, spans: &[TextSpan]) -> Latti
     }
 }
 
+/// `grid` with each body row that holds several records divided into the rows its text sets.
+///
+/// A table ruled above, under its header and below -- and down its columns, or not -- but not
+/// between its body rows has one body row in its grid, and read as one it puts every value of
+/// a column into one cell. Its text has the rows: each line of the body has a value in every
+/// column, side by side on one baseline. A row under the first is divided into its lines when
+/// it has [`UNRULED_ROW_MIN_LINES`] lines or more, text in [`UNRULED_ROW_MIN_COLUMNS`] columns
+/// or more, and a line of text in every one of them on most of its lines
+/// ([`UNRULED_ROW_MIN_FILL`]). A row of wrapped cells -- one column running on for several
+/// lines beside columns of one or two -- is one row, its cells read as one.
+pub(crate) fn with_unruled_rows(grid: &LatticeGrid, spans: &[TextSpan]) -> LatticeGrid {
+    if grid.column_count() < UNRULED_ROW_MIN_COLUMNS {
+        return grid.clone();
+    }
+    let text: Vec<&TextSpan> = spans
+        .iter()
+        .filter(|s| !s.text.trim().is_empty())
+        .filter(|s| bin_index(&grid.col_bounds, s.x).is_some())
+        .collect();
+    let mut row_bounds = vec![grid.row_bounds[0]];
+    for r in 0..grid.row_count() {
+        let (top, bottom) = (grid.row_bounds[r], grid.row_bounds[r + 1]);
+        if r > 0 {
+            let body: Vec<TextSpan> = text
+                .iter()
+                .filter(|s| s.y <= top && s.y >= bottom)
+                .map(|s| (*s).clone())
+                .collect();
+            let lines = group_into_rows(&body, CELL_LINE_TOLERANCE);
+            if holds_records(grid, &lines) {
+                row_bounds.extend(lines.windows(2).map(|w| (w[0].y + w[1].y) / 2.0));
+            }
+        }
+        row_bounds.push(bottom);
+    }
+    LatticeGrid {
+        row_bounds,
+        ..grid.clone()
+    }
+}
+
+/// Whether the `lines` of one row of `grid` are records of their own (see
+/// [`with_unruled_rows`]).
+fn holds_records(grid: &LatticeGrid, lines: &[super::table_detector::TableRowData]) -> bool {
+    if lines.len() < UNRULED_ROW_MIN_LINES {
+        return false;
+    }
+    let lines_in = |c: usize| {
+        lines
+            .iter()
+            .filter(|line| {
+                line.spans
+                    .iter()
+                    .any(|s| bin_index(&grid.col_bounds, s.x) == Some(c))
+            })
+            .count()
+    };
+    let filled: Vec<usize> = (0..grid.column_count())
+        .map(lines_in)
+        .filter(|&n| n > 0)
+        .collect();
+    filled.len() >= UNRULED_ROW_MIN_COLUMNS
+        && filled
+            .iter()
+            .all(|&n| n as f32 >= lines.len() as f32 * UNRULED_ROW_MIN_FILL)
+}
+
+/// The fewest lines a row needs to be divided into records: a cell of two lines -- a date over
+/// its kind, a count over its share -- beside cells of two is one cell.
+const UNRULED_ROW_MIN_LINES: usize = 3;
+
+/// The share of a row's lines every column holding text in it must have a line on for the
+/// lines to be records (see [`with_unruled_rows`]): most of them. Cells of two lines -- a name
+/// over its hours -- beside one that holds two such pairs fill half the row's lines.
+const UNRULED_ROW_MIN_FILL: f32 = 2.0 / 3.0;
+
+/// The fewest columns holding text a body needs for its lines to be its rows: two lists side by
+/// side in one ruled row (reagents beside equipment) share a line spacing without their lines
+/// being records, and read as two cells of lists. A label beside two values or more is a
+/// record.
+const UNRULED_ROW_MIN_COLUMNS: usize = 3;
+
 /// Boundary-tolerance for assigning a span to a grid cell (points). Grid
 /// boundaries are exact ruling-line positions; a span whose baseline sits a
 /// couple of points outside the nominal box (font metrics, hairline rounding)
@@ -556,15 +920,15 @@ fn bin_index(boundaries: &[f32], value: f32) -> Option<usize> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Axis {
+pub(crate) enum Axis {
     Horizontal,
     Vertical,
 }
 
 /// An axis-aligned ruling line: its position on the perpendicular axis and
 /// its extent `[lo, hi]` along its own axis.
-#[derive(Debug, Clone, Copy)]
-struct AxisSegment {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AxisSegment {
     axis: Axis,
     pos: f32,
     lo: f32,
@@ -731,6 +1095,16 @@ mod tests {
         let grids = infer_grids(&lines, &LatticeConfig::default());
         assert_eq!(grids.len(), 1);
         assert_eq!(grids[0].row_count(), 3);
+        // The shading bounds its rows as a rule would: no row is merged into the next.
+        let spans = vec![
+            span("a", 60.0, 287.0),
+            span("b", 60.0, 267.0),
+            span("c", 60.0, 247.0),
+            span("1", 160.0, 287.0),
+        ];
+        let (table, _) = build_table(&grids[0], &spans).unwrap();
+        assert!(!table.has_merged_cells());
+        assert_eq!(table.rows.len(), 3);
     }
 
     /// Cell shading inset a few points from the rules around it is the same boundary,
@@ -1067,6 +1441,7 @@ mod tests {
             right_x: 250.0,
             row_bounds: vec![300.0, 280.0, 260.0],
             col_bounds: vec![50.0, 150.0, 250.0],
+            rules: Vec::new(),
         }
     }
 
@@ -1181,6 +1556,320 @@ mod tests {
         assert_eq!(grids.len(), 1);
         assert_eq!(grids[0].row_bounds, vec![300.0, 260.0, 210.0]);
         assert_eq!(grids[0].col_bounds, vec![20.0, 120.0, 270.0, 420.0]);
+    }
+
+    /// The same open table with its rules drawn cell by cell: the rule under the header is a
+    /// piece per column, starting at each column rule. It is one rule all the same, and the
+    /// outer columns stay in the table.
+    #[test]
+    fn an_open_table_ruled_cell_by_cell_keeps_its_outer_columns() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 120.0),
+            h(280.0, 120.0, 270.0),
+            h(280.0, 270.0, 420.0),
+            h(210.0, 20.0, 420.0),
+            v(120.0, 210.0, 300.0),
+            v(270.0, 210.0, 300.0),
+        ];
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].col_bounds, vec![20.0, 120.0, 270.0, 420.0]);
+    }
+
+    /// A row label spanning rows in the open first column: the rules between those rows start
+    /// at the first column rule, not past it. They stop at a boundary of the grid, and the
+    /// column stays open.
+    #[test]
+    fn a_label_spanning_rows_in_an_open_column_keeps_the_column() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 420.0),
+            h(260.0, 120.0, 420.0),
+            h(240.0, 120.0, 420.0),
+            h(220.0, 20.0, 420.0),
+            v(120.0, 220.0, 280.0),
+            v(270.0, 220.0, 300.0),
+        ];
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].col_bounds, vec![20.0, 120.0, 270.0, 420.0]);
+        assert_eq!(grids[0].row_count(), 4);
+    }
+
+    /// An open table whose header label sits over two columns (no column rule in the header
+    /// row) and whose row label sits over two rows (no rule between them in its column, the
+    /// label centred on the two): each is one merged cell, its text read in one piece.
+    #[test]
+    fn cells_without_a_rule_their_neighbours_have_are_merged() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 420.0),
+            h(260.0, 120.0, 420.0),
+            h(240.0, 20.0, 420.0),
+            v(120.0, 240.0, 280.0),
+            v(270.0, 240.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Item", 100.0, 287.0),
+            span("kind", 128.0, 287.0),
+            span("2020", 280.0, 287.0),
+            span("GMV", 30.0, 257.0),
+            span("A", 130.0, 267.0),
+            span("1", 280.0, 267.0),
+            span("B", 130.0, 247.0),
+            span("2", 280.0, 247.0),
+        ];
+        let (table, consumed) = build_table(grid, &spans).unwrap();
+        assert_eq!(consumed.len(), 8);
+        let rows: Vec<Vec<(String, u8, u8)>> = table
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .map(|c| (c.plain_text(), c.rowspan, c.colspan))
+                    .collect()
+            })
+            .collect();
+        let cell = |t: &str, r: u8, c: u8| (t.to_string(), r, c);
+        assert_eq!(
+            rows,
+            vec![
+                vec![cell("Item kind", 1, 2), cell("2020", 1, 1)],
+                vec![cell("GMV", 2, 1), cell("A", 1, 1), cell("1", 1, 1)],
+                vec![cell("B", 1, 1), cell("2", 1, 1)],
+            ]
+        );
+        assert_eq!(table.column_count(), 3);
+    }
+
+    /// Two labels in a header band with no rule between them, each centred in its own column,
+    /// are two cells -- a line of text does not go on into the next column.
+    #[test]
+    fn two_labels_in_an_unruled_header_band_stay_two_cells() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 420.0),
+            h(260.0, 20.0, 420.0),
+            v(20.0, 260.0, 300.0),
+            v(120.0, 260.0, 300.0),
+            v(270.0, 260.0, 280.0),
+            v(420.0, 260.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        // `Meiosis` starts a few points before its column, as a centred label in a band
+        // without the rule may.
+        let spans = vec![
+            span("Mitosis", 170.0, 287.0),
+            span("Meiosis", 266.0, 287.0),
+            span("one", 130.0, 267.0),
+            span("two", 280.0, 267.0),
+        ];
+        let (table, _) = build_table(grid, &spans).unwrap();
+        assert!(!table.has_merged_cells());
+        assert_eq!(table.rows[0].cells[1].plain_text(), "Mitosis");
+        assert_eq!(table.rows[0].cells[2].plain_text(), "Meiosis");
+    }
+
+    /// A column of row labels drawn as one box beside columns ruled row by row: a label per
+    /// row, each in its own row, not one cell.
+    #[test]
+    fn row_labels_in_one_box_beside_ruled_rows_stay_one_per_row() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 120.0, 420.0),
+            h(260.0, 120.0, 420.0),
+            h(240.0, 20.0, 420.0),
+            v(20.0, 240.0, 300.0),
+            v(120.0, 240.0, 300.0),
+            v(270.0, 240.0, 300.0),
+            v(420.0, 240.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Rate", 30.0, 287.0),
+            span("Total", 30.0, 267.0),
+            span("Men", 30.0, 247.0),
+            span("1", 130.0, 287.0),
+            span("2", 130.0, 267.0),
+            span("3", 130.0, 247.0),
+        ];
+        let (table, _) = build_table(grid, &spans).unwrap();
+        assert!(!table.has_merged_cells());
+        assert_eq!(table.rows[2].cells[0].plain_text(), "Men");
+    }
+
+    /// A grid ruled above, under its header and below, and down its three columns.
+    fn header_and_body_lines() -> Vec<GraphicsLine> {
+        vec![
+            h(300.0, 50.0, 350.0),
+            h(280.0, 50.0, 350.0),
+            h(240.0, 50.0, 350.0),
+            v(50.0, 240.0, 300.0),
+            v(150.0, 240.0, 300.0),
+            v(250.0, 240.0, 300.0),
+            v(350.0, 240.0, 300.0),
+        ]
+    }
+
+    /// Ruled above, under its header and below, and down its columns, but not between its
+    /// body rows: the body's lines are its rows.
+    #[test]
+    fn a_body_ruled_into_no_rows_is_divided_by_its_lines() {
+        let grid = &infer_grids(&header_and_body_lines(), &LatticeConfig::default())[0];
+        let mut spans = vec![
+            span("Item", 60.0, 287.0),
+            span("2011", 160.0, 287.0),
+            span("2010", 260.0, 287.0),
+        ];
+        for (i, (item, now, then)) in [
+            ("Short", "27", "26"),
+            ("Adequate", "58", "67"),
+            ("Surplus", "3", "6"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let y = 270.0 - i as f32 * 12.0;
+            spans.push(span(item, 60.0, y));
+            spans.push(span(now, 160.0, y));
+            spans.push(span(then, 260.0, y));
+        }
+        let grid = with_unruled_rows(grid, &spans);
+        assert_eq!(grid.row_count(), 4);
+        let (table, _) = build_table(&grid, &spans).unwrap();
+        assert!(!table.has_merged_cells());
+        assert_eq!(table.rows[2].cells[0].plain_text(), "Adequate");
+        assert_eq!(table.rows[2].cells[2].plain_text(), "67");
+    }
+
+    /// A body row whose one cell wraps over several lines beside cells of one line is one row.
+    #[test]
+    fn a_body_row_of_wrapped_cells_stays_one_row() {
+        let grid = &infer_grids(&header_and_body_lines(), &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Item", 60.0, 287.0),
+            span("Notes", 160.0, 287.0),
+            span("Alpha", 60.0, 270.0),
+            span("first line", 160.0, 270.0),
+            span("second line", 160.0, 258.0),
+            span("third line", 160.0, 246.0),
+            span("1", 260.0, 270.0),
+        ];
+        assert_eq!(with_unruled_rows(grid, &spans), *grid);
+    }
+
+    /// Cells of two lines each -- a name over its hours -- with one cell holding two such pairs:
+    /// one row of cells, not four rows.
+    #[test]
+    fn cells_of_two_lines_beside_a_cell_of_four_stay_one_row() {
+        let grid = &infer_grids(&header_and_body_lines(), &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Mon", 60.0, 287.0),
+            span("Tue", 160.0, 287.0),
+            span("Wed", 260.0, 287.0),
+            span("White", 60.0, 274.0),
+            span("9am", 60.0, 264.0),
+            span("Smith", 160.0, 274.0),
+            span("8am", 160.0, 264.0),
+            span("Audino", 260.0, 274.0),
+            span("8am", 260.0, 264.0),
+            span("Nocciolino", 260.0, 254.0),
+            span("10am", 260.0, 244.0),
+        ];
+        assert_eq!(with_unruled_rows(grid, &spans), *grid);
+    }
+
+    /// Two lists side by side in one ruled row share their line spacing without their lines
+    /// being records: the row stays one row of two lists.
+    #[test]
+    fn two_lists_side_by_side_in_one_row_stay_one_row() {
+        let grid = &infer_grids(&header_and_body_lines(), &LatticeConfig::default())[0];
+        let mut spans = vec![
+            span("Reagents", 60.0, 287.0),
+            span("Supplies", 160.0, 287.0),
+        ];
+        for (i, (left, right)) in [("Buffer", "Rack"), ("Enzyme", "Tips"), ("Water", "Marker")]
+            .into_iter()
+            .enumerate()
+        {
+            let y = 270.0 - i as f32 * 12.0;
+            spans.push(span(left, 60.0, y));
+            spans.push(span(right, 160.0, y));
+        }
+        assert_eq!(with_unruled_rows(grid, &spans), *grid);
+    }
+
+    /// A box of row labels with a position left empty between two labels (a sub-header row of
+    /// the columns beside it): the empty position joins one label, and the two labels stay two
+    /// cells.
+    #[test]
+    fn an_empty_position_between_two_labels_joins_one_of_them() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 120.0, 420.0),
+            h(260.0, 120.0, 420.0),
+            h(240.0, 120.0, 420.0),
+            h(220.0, 20.0, 420.0),
+            v(20.0, 220.0, 300.0),
+            v(120.0, 220.0, 300.0),
+            v(270.0, 220.0, 300.0),
+            v(420.0, 220.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Label", 30.0, 287.0),
+            span("Value", 130.0, 287.0),
+            span("Rate", 30.0, 267.0),
+            span("1", 130.0, 267.0),
+            span("share", 130.0, 247.0),
+            span("Duration", 30.0, 227.0),
+            span("2", 130.0, 227.0),
+        ];
+        let (table, _) = build_table(grid, &spans).unwrap();
+        let texts: Vec<String> = table
+            .rows
+            .iter()
+            .flat_map(|row| row.cells.iter().map(|c| c.plain_text()))
+            .collect();
+        assert!(texts.contains(&"Rate".to_string()), "{texts:?}");
+        assert!(texts.contains(&"Duration".to_string()), "{texts:?}");
+    }
+
+    /// A header row standing above the top rule has no column rules, but nothing is drawn at
+    /// its top either: its labels stay in their own columns.
+    #[test]
+    fn a_header_row_above_the_rules_is_not_merged() {
+        let grid = &infer_grids(&open_border_lines(), &LatticeConfig::default())[0];
+        let spans = vec![
+            span("Name", 130.0, 306.0),
+            span("Value", 280.0, 306.0),
+            span("Alpha", 30.0, 280.0),
+            span("one", 130.0, 280.0),
+            span("two", 280.0, 280.0),
+        ];
+        let grid = with_header_above(grid, &spans);
+        let (table, _) = build_table(&grid, &spans).unwrap();
+        assert_eq!(table.rows[0].cells.len(), 3);
+        assert!(!table.has_merged_cells());
+    }
+
+    /// A rule that stops short of the others somewhere that is no boundary of the grid is no
+    /// evidence of an open side: the side stays closed.
+    #[test]
+    fn a_rule_stopping_short_off_any_boundary_does_not_open_a_side() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(260.0, 112.0, 420.0),
+            h(210.0, 20.0, 420.0),
+            v(120.0, 210.0, 300.0),
+            v(270.0, 210.0, 300.0),
+        ];
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].col_bounds, vec![120.0, 270.0, 420.0]);
     }
 
     /// The labels over a table ruled under its header but not above it are its header row.

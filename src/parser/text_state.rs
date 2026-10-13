@@ -121,6 +121,7 @@ impl TextParams {
     }
 
     /// How far showing `glyphs` moves the text position, in text space.
+    #[cfg(feature = "raster")]
     pub fn advance_of(&self, glyphs: &[GlyphAdvance]) -> Shift {
         glyphs
             .iter()
