@@ -815,7 +815,7 @@ checksum = "46c2f9a6bf9b703142cf01a01928498bcdd4f6dd2a2cd303155bee991a3fe86d"
 
 [[package]]
 name = "unpdf"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "aes",
  "cbc",
