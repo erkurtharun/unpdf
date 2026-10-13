@@ -466,6 +466,21 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     let mut cell_spans: Vec<Vec<Vec<TextSpan>>> = vec![vec![Vec::new(); cols]; rows];
     let mut consumed = Vec::new();
 
+    // Each line of text is in one row: the row the middle of its main text's letters is in --
+    // its largest, so a subscript lowered across a row boundary, or to within a couple of
+    // points of the table's top rule, stays with the line it marks.
+    let mut line_row: Vec<Option<usize>> = vec![None; spans.len()];
+    for line in group_into_rows(spans, CELL_LINE_TOLERANCE) {
+        let row = line
+            .spans
+            .iter()
+            .max_by(|a, b| a.font_size.total_cmp(&b.font_size))
+            .and_then(|main| bin_index(&grid.row_bounds, letters_middle(main)));
+        for &i in &line.sources {
+            line_row[i] = row;
+        }
+    }
+
     // Each span by the column it starts in (and `column_holding`'s nudge) first, so every
     // column's text is known; then each span by the column whose text it lies over (see
     // `ColumnText::column_for`).
@@ -474,7 +489,7 @@ pub(crate) fn build_table(grid: &LatticeGrid, spans: &[TextSpan]) -> Option<(Tab
     for i in order {
         let span = &spans[i];
         let (Some(r), Some(start), Some(otherwise)) = (
-            bin_index(&grid.row_bounds, span.y),
+            line_row[i],
             bin_index(&grid.col_bounds, span.x),
             column_holding(&grid.col_bounds, span),
         ) else {
@@ -570,14 +585,20 @@ fn reads_across(left: &[TextSpan], right: &[TextSpan], x: f32) -> bool {
         let (start, end) = s.ink_extent();
         start < x - s.font_size && end > x + s.font_size
     });
-    runs_over
-        || left.iter().any(|a| {
-            right.iter().any(|b| {
-                let size = a.font_size.max(b.font_size);
-                (a.y - b.y).abs() <= size * CELL_LINE_TOLERANCE
-                    && b.ink_extent().0 - a.ink_extent().1 <= size
-            })
+    runs_over || goes_on(left, right)
+}
+
+/// Whether a line of `left` goes on into `right`: a piece of each on one baseline, the right one
+/// starting within a font size of where the left one's ink ends -- one line of text, however
+/// many column boundaries lie between them.
+fn goes_on(left: &[TextSpan], right: &[TextSpan]) -> bool {
+    left.iter().any(|a| {
+        right.iter().any(|b| {
+            let size = a.font_size.max(b.font_size);
+            (a.y - b.y).abs() <= size * CELL_LINE_TOLERANCE
+                && b.ink_extent().0 - a.ink_extent().1 <= size
         })
+    })
 }
 
 /// A cell of a grid: the row and column it starts in and how many of each it covers.
@@ -602,7 +623,9 @@ struct Merge {
 ///
 /// The text decides too. Two positions side by side are one cell only when one of them is
 /// empty or their text reads as one ([`reads_across`]) -- two labels each standing in its own
-/// column of a shaded header band, with no rule between them, are two cells. A merge down a
+/// column of a shaded header band, with no rule between them, are two cells -- and positions
+/// joined along a row make one cell only while they hold one piece of text: two labels at the
+/// ends of a band with empty positions between them stay in their columns. A merge down a
 /// column takes in the text of one position at most: a column of row labels drawn in one box,
 /// while the columns beside it are ruled row by row, holds a label per row, each on its row's
 /// line -- and a label set over two lines of a cell spanning rows sits on the same lines, so
@@ -658,6 +681,35 @@ fn merged_cells(grid: &LatticeGrid, cell_spans: &[Vec<Vec<TextSpan>>]) -> Vec<Me
             && crossed_at(Axis::Vertical, x_right, y)
     };
     let has_text = |i: usize| !cell_spans[i / cols][i % cols].is_empty();
+    // Joins along a row are decided per run of positions with no column rule between them: a
+    // run holding one piece of text is one cell, but a run holding several -- labels standing
+    // apart in one band, `bit 7` at its start and `bit 0` at its end -- keeps each label in
+    // the column it is drawn in. Its empty positions join neither label: joined one by one,
+    // they would carry one label into the other. Text that goes on from one position to a
+    // later one ([`goes_on`]) is one piece, whatever empty positions its line runs over.
+    let mut joins_along_row = vec![false; rows * cols];
+    for r in 0..rows {
+        let text = |c: usize| has_text(r * cols + c);
+        let mut start = 0;
+        while start < cols {
+            let mut end = start;
+            while end + 1 < cols && joins_right(r, end) {
+                end += 1;
+            }
+            let mut pieces = 0;
+            let mut last: Option<usize> = None;
+            for c in (start..=end).filter(|&c| text(c)) {
+                if !last.is_some_and(|l| goes_on(&cell_spans[r][l], &cell_spans[r][c])) {
+                    pieces += 1;
+                }
+                last = Some(c);
+            }
+            for c in start..end {
+                joins_along_row[r * cols + c] = pieces <= 1 || (text(c) && text(c + 1));
+            }
+            start = end + 1;
+        }
+    }
 
     fn find(parent: &mut [usize], i: usize) -> usize {
         let mut root = i;
@@ -681,7 +733,7 @@ fn merged_cells(grid: &LatticeGrid, cell_spans: &[Vec<Vec<TextSpan>>]) -> Vec<Me
     };
     for r in 0..rows {
         for c in 0..cols {
-            if c + 1 < cols && joins_right(r, c) {
+            if c + 1 < cols && joins_along_row[r * cols + c] {
                 union(r * cols + c, r * cols + c + 1, false);
             }
             if r + 1 < rows && joins_below(r, c) {
@@ -766,7 +818,9 @@ pub(crate) fn with_header_above(grid: &LatticeGrid, spans: &[TextSpan]) -> Latti
     };
     let above: Vec<TextSpan> = spans
         .iter()
-        .filter(|s| s.y > grid.top_y + CELL_BOUNDARY_TOLERANCE && !s.text.trim().is_empty())
+        .filter(|s| {
+            letters_middle(s) > grid.top_y + CELL_BOUNDARY_TOLERANCE && !s.text.trim().is_empty()
+        })
         .filter(|s| s.x < grid.right_x && s.x + s.width > grid.left_x)
         .cloned()
         .collect();
@@ -875,10 +929,35 @@ fn holds_records(grid: &LatticeGrid, lines: &[super::table_detector::TableRowDat
         .map(lines_in)
         .filter(|&n| n > 0)
         .collect();
-    filled.len() >= UNRULED_ROW_MIN_COLUMNS
-        && filled
+    if filled.len() < UNRULED_ROW_MIN_COLUMNS
+        || !filled
             .iter()
             .all(|&n| n as f32 >= lines.len() as f32 * UNRULED_ROW_MIN_FILL)
+    {
+        return false;
+    }
+    // Columns of running text -- an article set in columns inside a frame -- fill every column
+    // on every line too, one line spacing for all of them. Their lines are prose, each column
+    // read down, not entries: the row is records only when its lines, column by column, are not.
+    let column_lines: Vec<super::table_detector::TableRowData> = lines
+        .iter()
+        .flat_map(|line| {
+            (0..grid.column_count()).filter_map(move |c| {
+                let spans: Vec<TextSpan> = line
+                    .spans
+                    .iter()
+                    .filter(|s| bin_index(&grid.col_bounds, s.x) == Some(c))
+                    .cloned()
+                    .collect();
+                (!spans.is_empty()).then(|| super::table_detector::TableRowData {
+                    y: line.y,
+                    spans,
+                    sources: Vec::new(),
+                })
+            })
+        })
+        .collect();
+    !super::ruled_rows::reads_as_prose(&column_lines.iter().collect::<Vec<_>>())
 }
 
 /// The fewest lines a row needs to be divided into records: a cell of two lines -- a date over
@@ -902,21 +981,33 @@ const UNRULED_ROW_MIN_COLUMNS: usize = 3;
 /// should still land in its cell rather than being silently dropped.
 const CELL_BOUNDARY_TOLERANCE: f32 = 2.0;
 
+/// The height of the middle of a span's letters, between its descender and its ascender: what
+/// decides the row a line of text is in (see [`build_table`]). Its baseline does not -- a caption
+/// standing just above a table's top rule has its letters above the rule.
+fn letters_middle(span: &TextSpan) -> f32 {
+    (span.top() + span.bottom()) / 2.0
+}
+
 /// Find which `[boundaries[i], boundaries[i+1])` bin `value` falls into.
 /// Works for either ascending (`col_bounds`) or descending (`row_bounds`)
 /// boundary lists.
 fn bin_index(boundaries: &[f32], value: f32) -> Option<usize> {
-    for i in 0..boundaries.len().saturating_sub(1) {
-        let (lo, hi) = if boundaries[i] <= boundaries[i + 1] {
-            (boundaries[i], boundaries[i + 1])
-        } else {
-            (boundaries[i + 1], boundaries[i])
-        };
-        if value >= lo - CELL_BOUNDARY_TOLERANCE && value <= hi + CELL_BOUNDARY_TOLERANCE {
-            return Some(i);
-        }
-    }
-    None
+    let bins = || {
+        boundaries.windows(2).enumerate().map(|(i, pair)| {
+            let (lo, hi) = (pair[0].min(pair[1]), pair[0].max(pair[1]));
+            (i, lo, hi)
+        })
+    };
+    // The bin the value lies in; only a value outside every bin is given the tolerance -- a
+    // value just inside one bin is not the bin before it's, however close to it.
+    bins()
+        .find(|&(_, lo, hi)| value >= lo && value <= hi)
+        .or_else(|| {
+            bins().find(|&(_, lo, hi)| {
+                value >= lo - CELL_BOUNDARY_TOLERANCE && value <= hi + CELL_BOUNDARY_TOLERANCE
+            })
+        })
+        .map(|(i, _, _)| i)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1541,6 +1632,16 @@ mod tests {
         assert_eq!(bin_index(&descending, 5.0), Some(1));
     }
 
+    /// A value inside a bin is in that bin, even within the tolerance of the bin before it:
+    /// the tolerance only catches values just outside every bin.
+    #[test]
+    fn bin_index_prefers_the_bin_a_value_lies_in() {
+        let descending = [30.0, 20.0, 10.0];
+        assert_eq!(bin_index(&descending, 19.0), Some(1));
+        assert_eq!(bin_index(&descending, 31.0), Some(0));
+        assert_eq!(bin_index(&descending, 9.0), Some(1));
+    }
+
     /// Rules only between the cells — under the header, between rows, between columns —
     /// and no frame: the outer columns and the last row are bounded by the rules' ends.
     fn open_border_lines() -> Vec<GraphicsLine> {
@@ -1675,6 +1776,150 @@ mod tests {
         assert_eq!(table.rows[0].cells[2].plain_text(), "Meiosis");
     }
 
+    /// A band drawn without column rules under a row ruled cell by cell, a label at each end
+    /// (a register map's `bit 3` … `bit 0`): the labels stand apart, so the band is not one
+    /// cell -- each label stays in the column it is drawn in, the positions between them empty.
+    /// Empty positions joining their neighbours one by one must not carry one label into the
+    /// other.
+    #[test]
+    fn labels_at_the_ends_of_an_unruled_band_stay_in_their_columns() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 420.0),
+            h(260.0, 20.0, 420.0),
+            v(20.0, 260.0, 300.0),
+            v(120.0, 280.0, 300.0),
+            v(220.0, 280.0, 300.0),
+            v(320.0, 280.0, 300.0),
+            v(420.0, 260.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        assert_eq!(grid.column_count(), 4);
+        let spans = vec![
+            span("RTCSEC", 30.0, 287.0),
+            span("ST", 130.0, 287.0),
+            span("SECTEN", 230.0, 287.0),
+            span("SECONE", 330.0, 287.0),
+            span("bit 3", 25.0, 267.0),
+            span("bit 0", 390.0, 267.0),
+        ];
+        let (table, _) = build_table(grid, &spans).unwrap();
+        let band: Vec<String> = table.rows[1].cells.iter().map(|c| c.plain_text()).collect();
+        assert_eq!(band, ["bit 3", "", "", "bit 0"]);
+        assert!(
+            table.rows[1].cells.iter().all(|c| c.colspan == 1),
+            "{band:?}"
+        );
+    }
+
+    /// The same band holding one line of text that runs on over the column boundaries -- a
+    /// name with its note mark set right after it, `M.D.` falling in one column and `1*` two
+    /// columns on -- is one piece of text, and the band one cell.
+    #[test]
+    fn a_line_running_on_across_an_unruled_band_is_one_cell() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 420.0),
+            h(260.0, 20.0, 420.0),
+            v(20.0, 260.0, 300.0),
+            v(120.0, 280.0, 300.0),
+            v(220.0, 280.0, 300.0),
+            v(320.0, 280.0, 300.0),
+            v(420.0, 260.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        let mut name = span("Stafford Warren, M.D.", 25.0, 267.0);
+        name.width = 205.0;
+        let spans = vec![
+            span("Name", 30.0, 287.0),
+            span("A", 130.0, 287.0),
+            span("B", 230.0, 287.0),
+            span("C", 330.0, 287.0),
+            name,
+            span("1*", 231.0, 270.0),
+        ];
+        let (table, _) = build_table(grid, &spans).unwrap();
+        let band: Vec<String> = table.rows[1].cells.iter().map(|c| c.plain_text()).collect();
+        assert_eq!(band.len(), 1, "{band:?}");
+        assert!(
+            band[0].starts_with("Stafford Warren, M.D.") && band[0].ends_with("1*"),
+            "{band:?}"
+        );
+    }
+
+    /// A caption standing just above a table's top rule, its subscript lowered to within a
+    /// couple of points of the rule (`f` with `PCLK1` under it): the subscript's letters are
+    /// above the rule, so it stays with its caption -- not in the table's first cell, leaving
+    /// a hole in the caption's line.
+    #[test]
+    fn a_subscript_just_above_the_top_rule_stays_out_of_the_table() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 420.0),
+            h(260.0, 20.0, 420.0),
+            v(20.0, 260.0, 300.0),
+            v(220.0, 260.0, 300.0),
+            v(420.0, 260.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        let mut subscript = span("PCLK1", 150.0, 302.0);
+        subscript.font_size = 8.0;
+        let spans = vec![
+            span("fSCL (kHz)", 30.0, 287.0),
+            span("I2C_CCR value", 230.0, 287.0),
+            span("400", 30.0, 267.0),
+            span("0x8019", 230.0, 267.0),
+            subscript,
+        ];
+        let (table, consumed) = build_table(grid, &spans).unwrap();
+        assert_eq!(table.rows[0].cells[0].plain_text(), "fSCL (kHz)");
+        assert!(
+            !consumed.contains(&4),
+            "the subscript was taken into the table"
+        );
+    }
+
+    /// A header label set across the boundary of two rows that its column has no rule at, its
+    /// subscript lowered below the boundary (`f` with `SCL` under it, then `(kHz)`): the line
+    /// is in one row, so the label reads as one cell spanning both -- not `f (kHz)` over `SCL`.
+    #[test]
+    fn a_label_with_a_subscript_across_a_row_boundary_stays_one_cell() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 220.0, 420.0),
+            h(260.0, 20.0, 420.0),
+            h(240.0, 20.0, 420.0),
+            v(20.0, 240.0, 300.0),
+            v(220.0, 240.0, 300.0),
+            v(420.0, 240.0, 300.0),
+        ];
+        let grid = &infer_grids(&lines, &LatticeConfig::default())[0];
+        // The label's letters stand around the boundary at 280; its subscript sits lower.
+        let mut f = span("f", 30.0, 277.5);
+        f.font_size = 9.0;
+        let mut sub = span("SCL", 36.0, 275.5);
+        sub.font_size = 7.2;
+        let mut khz = span("(kHz)", 60.0, 277.5);
+        khz.font_size = 9.0;
+        let spans = vec![
+            f,
+            sub,
+            khz,
+            span("I2C_CCR value", 230.0, 287.0),
+            span("RP = 4.7 k", 230.0, 267.0),
+            span("400", 30.0, 247.0),
+            span("0x8019", 230.0, 247.0),
+        ];
+        let (table, _) = build_table(grid, &spans).unwrap();
+        let label = &table.rows[0].cells[0];
+        assert_eq!(label.rowspan, 2, "{:?}", label.plain_text());
+        let text = label.plain_text();
+        assert!(
+            text.contains('f') && text.contains("SCL") && text.contains("(kHz)"),
+            "{text}"
+        );
+    }
+
     /// A column of row labels drawn as one box beside columns ruled row by row: a label per
     /// row, each in its own row, not one cell.
     #[test]
@@ -1745,6 +1990,45 @@ mod tests {
         assert!(!table.has_merged_cells());
         assert_eq!(table.rows[2].cells[0].plain_text(), "Adequate");
         assert_eq!(table.rows[2].cells[2].plain_text(), "67");
+    }
+
+    /// An article's columns of running text inside a frame fill every column on every line,
+    /// one line spacing for all of them -- but each column's lines are prose, not entries: the
+    /// body stays one row, each column read down as one cell.
+    #[test]
+    fn columns_of_prose_in_a_frame_are_not_divided_into_records() {
+        let grid = &infer_grids(&header_and_body_lines(), &LatticeConfig::default())[0];
+        let columns = [
+            [
+                "Lilienthal was relentless in his",
+                "study of air movement and wind,",
+                "and he recognized quickly what",
+                "is common knowledge among us",
+            ],
+            [
+                "flight until the year after that.",
+                "Before he flew, he published his",
+                "theories on how man could fly in",
+                "a book which was widely read by",
+            ],
+            [
+                "Modern hang glider enthusiasts will",
+                "also recognize and appreciate what",
+                "these experiments revealed, that he",
+                "could control his direction of flight",
+            ],
+        ];
+        let mut spans = Vec::new();
+        for (c, lines) in columns.iter().enumerate() {
+            for (i, text) in lines.iter().enumerate() {
+                let mut line = span(text, 55.0 + c as f32 * 100.0, 270.0 - i as f32 * 9.0);
+                line.font_size = 7.0;
+                line.width = 92.0;
+                spans.push(line);
+            }
+        }
+        let divided = with_unruled_rows(grid, &spans);
+        assert_eq!(divided.row_count(), grid.row_count());
     }
 
     /// A body row whose one cell wraps over several lines beside cells of one line is one row.

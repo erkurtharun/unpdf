@@ -57,6 +57,11 @@ pub struct TextSpan {
 /// The advance of a space, in multiples of the font size -- what most text faces draw.
 const SPACE_EM: f32 = 0.25;
 
+/// The narrowest gap, in multiples of the font size, between two pieces of text that are not
+/// words of one line: justification stretches word spaces to about two-thirds of the size at
+/// most, and a table's columns stand at least this far apart.
+pub(crate) const COLUMN_GAP_EM: f32 = 0.8;
+
 impl TextSpan {
     /// The direction of text read left to right, the way most text runs (see
     /// [`TextSpan::direction`]).
@@ -2701,10 +2706,6 @@ fn baseline_direction(tm: &[f32; 6], ctm: &[f32; 6]) -> [f32; 2] {
     }
 }
 
-/// How far apart, in font sizes, the runs of one rotated line may stand and still be one line
-/// (see [`join_rotated_runs`]); past a space's width they are separate words.
-const ROTATED_JOIN_GAP: f32 = 2.0;
-
 /// The runs set along a baseline that is not horizontal, joined along it, each line one span.
 ///
 /// Every reader of spans groups them into lines left to right, by their baselines' height. A
@@ -2716,7 +2717,8 @@ const ROTATED_JOIN_GAP: f32 = 2.0;
 /// page: `x` and `width` are its horizontal extent and `y` is where the reading starts, so a
 /// row of labels turned the same way reads left to right like any line. Runs of one direction
 /// are one line when their baselines are within a third of a font size of each other and
-/// they follow within [`ROTATED_JOIN_GAP`] font sizes.
+/// they follow closer than [`COLUMN_GAP_EM`] -- further apart they are separate pieces of text,
+/// like the labels of neighbouring cells of a table set turned on the page.
 pub(crate) fn join_rotated_runs(spans: Vec<TextSpan>) -> Vec<TextSpan> {
     let (rotated, mut out): (Vec<TextSpan>, Vec<TextSpan>) =
         spans.into_iter().partition(TextSpan::is_rotated);
@@ -2761,7 +2763,7 @@ pub(crate) fn join_rotated_runs(spans: Vec<TextSpan>) -> Vec<TextSpan> {
                 };
                 let size = current.font_size.max(span.font_size);
                 let gap = along(&span) - (along(current) + current.width);
-                if gap > size * ROTATED_JOIN_GAP {
+                if gap >= size * COLUMN_GAP_EM {
                     out.extend(run.replace(span).map(placed_on_page));
                     continue;
                 }
@@ -2815,9 +2817,8 @@ fn reads_left_to_right(tm: &[f32; 6], ctm: &[f32; 6]) -> bool {
 /// Insert a space into `text` if it doesn't already end with one and the
 /// last character is not from a spaceless script (CJK/Japanese).
 /// A TJ adjustment at least this wide (thousandths of text space, i.e. of the font size)
-/// separates cells, not words: justification stretches word spaces to about two-thirds of the
-/// size at most, and a table's columns stand at least this far apart.
-const TJ_CELL_GAP: f32 = 800.0;
+/// separates cells, not words ([`COLUMN_GAP_EM`]).
+const TJ_CELL_GAP: f32 = COLUMN_GAP_EM * 1000.0;
 
 /// The parts of a TJ array between its cell gaps — adjustments of at least [`TJ_CELL_GAP`]
 /// that follow a drawn string and precede another. Each gap starts the part after it, so
@@ -3722,6 +3723,24 @@ mod tests {
             .collect();
         texts.sort();
         assert_eq!(texts, ["Notes", "Total revenue"]);
+    }
+
+    /// Labels of neighbouring cells of a table set turned on the page stand on one baseline,
+    /// a little under a font size apart and more: they are separate pieces of text, not words
+    /// of one line (a column of `AF15` … `AF11` became one label).
+    #[test]
+    fn rotated_labels_a_column_gap_apart_stay_separate() {
+        let spans = vec![
+            up("AF12", 40.0, 100.0, 15.0),
+            up("AF11", 40.0, 123.0, 15.0), // 8 points after `AF12`: 0.9 of the size
+            up("AF10", 40.0, 151.0, 15.0),
+        ];
+        let mut texts: Vec<String> = join_rotated_runs(spans)
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
+        texts.sort();
+        assert_eq!(texts, ["AF10", "AF11", "AF12"]);
     }
 
     /// Text set upside down reads right to left on the page: its pieces join in the order

@@ -14,7 +14,7 @@
 //! most of the bands between them hold no text: a stack like that is left alone.
 
 use super::lattice::LatticeGrid;
-use super::layout::TextSpan;
+use super::layout::{TextSpan, COLUMN_GAP_EM};
 use super::table_detector::{
     group_into_rows, is_running_text_row, without_heading_ends, TableRowData,
 };
@@ -28,8 +28,6 @@ const EXTENT_TOLERANCE: f32 = 3.0;
 const SAME_RULE: f32 = 1.0;
 /// Rows of a band are grouped like stream-mode rows: baselines within this share of the size.
 const ROW_TOLERANCE: f32 = 0.5;
-/// The narrowest gap, in multiples of the font size, that separates two columns.
-const COLUMN_GAP_EM: f32 = 0.8;
 /// A cell this many words long is a line of prose, not a table entry.
 const PROSE_WORDS: usize = 7;
 
@@ -181,7 +179,7 @@ fn is_tabular(rows: &[TableRowData]) -> bool {
 }
 
 /// Lines of running text, or cells as long as sentences.
-fn reads_as_prose(rows: &[&TableRowData]) -> bool {
+pub(crate) fn reads_as_prose(rows: &[&TableRowData]) -> bool {
     let running = rows.iter().filter(|r| is_running_text_row(r)).count();
     let cells: Vec<usize> = rows
         .iter()

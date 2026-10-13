@@ -20,6 +20,33 @@
   sets it apart, was read as that column's first line — after the whole first column. A line
   centred on the region and standing above where every column begins is now read on its own,
   before the columns; a column's own first line, which starts at its column's edge, is not.
+- **Two labels at the ends of a band drawn without column rules stay in their columns.** A row
+  drawn as one band under a row ruled cell by cell -- a register map's `bit 7` at its start and
+  `bit 0` at its end -- was read as one merged cell, `bit 7 bit 0`: each empty position between
+  the labels joined its neighbour, and one by one they carried one label into the other. Positions
+  joined along a row now make one cell only while they hold one piece of text; with several, each
+  label stays in the column it is drawn in.
+- **Labels of neighbouring cells in a table set turned on the page stay apart.** Pieces of text
+  turned on the page were joined along their baseline when they stood up to two font sizes apart,
+  so the labels of neighbouring cells of a rotated table -- `AF15`, `AF14`, … `AF11`, a little over
+  a font size apart -- became one label in one row, and the values of those rows moved into it.
+  They now join only closer than the gap that separates a table's columns (0.8 of the font size),
+  the same measure that splits a `TJ` array into cells.
+- **A caption's subscript just above a table stays in the caption.** Text was placed in a ruled
+  table's rows by its baseline, give or take two points, so a subscript lowered to within two points
+  of the top rule -- `f` with `PCLK1` under it in `Table 59. SCL frequency (fPCLK1 = 50 MHz, …)` --
+  was taken into the table's first cell. The caption kept a hole where it had been, and a page
+  with a figure above could then be read as two columns cut through that hole: the caption's first
+  half, the figure's labels, then the rest of the caption. A line of text is now placed in the row
+  the middle of its main text's letters is in, its subscripts and superscripts with it -- so a
+  label whose subscript dips below a row boundary is not divided between two rows either.
+- **Text just inside a cell is placed in that cell.** A position within two points of a cell
+  boundary was given to the first cell it was near, even when it lay inside the next one: a
+  value starting just right of a column rule went into the column before it, a line just below a
+  row boundary into the row above. The cell a position lies in now comes first; the tolerance
+  only places text just outside every cell. With columns found correctly, an article set in
+  columns inside a frame -- running text filling every column on every line -- is kept from being
+  read as one record per line: lines that read as prose, column by column, are not records.
 
 ## 0.43.0 — 2026-10-13
 
