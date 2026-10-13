@@ -19,8 +19,22 @@
   merged cell's text is now in the position it starts at and the positions it covers are
   empty, as in `Table::to_csv`.
 
+- **Text turned on the page is read along its own baseline.** A run set to read up the page
+  (a chart's axis labels, a table's turned column heads, an identifier stamped up the margin)
+  or upside down was grouped into lines by its glyphs' height on the page, like text read left
+  to right: date labels drawn a few glyphs at a time came out as every label's first piece on
+  one line and every label's next piece on the next (`0 0 0 … 201 201 201 …`). The pieces of a
+  rotated line are now joined in the order they are read, word spaces kept, and the line is a
+  line of its own — never merged into the text read left to right beside it, and never taken
+  for a heading. A row of labels turned the same way reads left to right as one line.
+
 ### Changed
 
+- **Breaking: `TextSpan` has a `direction` field** — the direction its baseline runs on the page,
+  a unit vector (`TextSpan::LEFT_TO_RIGHT` for most text; `TextSpan::is_rotated`). A rotated
+  span is one joined line, placed by the box it covers: `x` and `width` are its horizontal
+  extent and `y` is where its reading starts. Code building `TextSpan` with a struct literal
+  needs the field (or `TextSpan::new`, which sets it).
 - **Merged cells of a ruled table are reported.** A cell with nothing drawn along an edge its
   neighbours are ruled at — a header over two columns, a row label over three rows — is one
   cell with `rowspan`/`colspan` (JSON, and an HTML table under `TableFallback::Html`), its text

@@ -41,12 +41,27 @@ pub struct TextSpan {
     pub is_bold: bool,
     /// Whether the font appears to be italic
     pub is_italic: bool,
+    /// The direction its baseline runs on the page, a unit vector: `[1.0, 0.0]` for text read
+    /// left to right ([`TextSpan::LEFT_TO_RIGHT`]), `[0.0, 1.0]` for text turned to read up the
+    /// page. A run read along any other direction is one line of its own, placed by the box it
+    /// covers on the page (see [`join_rotated_runs`]): `x` and `width` are that box's horizontal
+    /// extent, `y` is where the reading starts.
+    pub direction: [f32; 2],
 }
 
 /// The advance of a space, in multiples of the font size -- what most text faces draw.
 const SPACE_EM: f32 = 0.25;
 
 impl TextSpan {
+    /// The direction of text read left to right, the way most text runs (see
+    /// [`TextSpan::direction`]).
+    pub const LEFT_TO_RIGHT: [f32; 2] = [1.0, 0.0];
+
+    /// Whether the run reads along a direction other than left to right.
+    pub fn is_rotated(&self) -> bool {
+        self.direction != Self::LEFT_TO_RIGHT
+    }
+
     /// Where the run lies in ink, left to right: its trailing spaces are advance, not ink.
     /// A gap measured to them comes out a space short (a header cell drawn as
     /// `Added cation ` stood 5 pt from the next one instead of 7), and a run padded with
@@ -85,6 +100,7 @@ impl TextSpan {
             font_name,
             is_bold,
             is_italic,
+            direction: Self::LEFT_TO_RIGHT,
         }
     }
 
@@ -1596,6 +1612,12 @@ impl<'a> LayoutAnalyzer<'a> {
                             );
                             let mut span =
                                 TextSpan::new(text, x, y, effective_size, text_state.font.clone());
+                            // A vertical font writes down the page by design and is read as it
+                            // always was; any other run not read left to right carries its
+                            // direction, to be joined along it.
+                            if !vertical && !reads_left_to_right(&text_matrix.tm, &ctm) {
+                                span.direction = baseline_direction(&text_matrix.tm, &ctm);
+                            }
                             span.is_bold |= text_state.font_bold;
                             span.is_italic |= text_state.font_italic;
                             if let Some(width) = measured_width {
@@ -1605,7 +1627,20 @@ impl<'a> LayoutAnalyzer<'a> {
                             }
                             spans.push(span);
                         } else if text.chars().any(char::is_whitespace) {
-                            attach_word_space(&mut spans, x, y, effective_size, measured_width);
+                            let direction =
+                                if vertical || reads_left_to_right(&text_matrix.tm, &ctm) {
+                                    TextSpan::LEFT_TO_RIGHT
+                                } else {
+                                    baseline_direction(&text_matrix.tm, &ctm)
+                                };
+                            attach_word_space(
+                                &mut spans,
+                                x,
+                                y,
+                                effective_size,
+                                measured_width,
+                                direction,
+                            );
                         }
 
                         if let Some(run) = advance {
@@ -1643,7 +1678,7 @@ impl<'a> LayoutAnalyzer<'a> {
         self.page_facts.set(facts);
 
         Ok((
-            spans,
+            join_rotated_runs(spans),
             signals,
             PageRulings {
                 grids: lattice_grids,
@@ -1728,7 +1763,29 @@ impl<'a> LayoutAnalyzer<'a> {
         // two would average into a mid-size pseudo-heading).
         let mut current_line_font_size: f32 = 0.0;
 
+        // Rotated lines (see `join_rotated_runs`) share no baseline with the text read left to
+        // right around them: they make lines only with one another -- a row of labels turned the
+        // same way, starting at one height, reads left to right as one line.
+        let mut rotated_line: Vec<TextSpan> = Vec::new();
         for span in spans {
+            if span.is_rotated() {
+                let continues = rotated_line.last().is_some_and(|last: &TextSpan| {
+                    last.direction == span.direction
+                        && (last.y - span.y).abs() <= last.font_size.min(span.font_size) * 0.3
+                });
+                if !continues && !rotated_line.is_empty() {
+                    lines.push(TextLine::from_spans(std::mem::take(&mut rotated_line)));
+                }
+                rotated_line.push(span);
+                continue;
+            }
+            // The text read left to right has moved past the rotated line's height: it is done,
+            // and stands in the reading order where it began.
+            if rotated_line.last().is_some_and(|last: &TextSpan| {
+                (last.y - span.y).abs() > last.font_size.min(span.font_size) * 0.3
+            }) {
+                lines.push(TextLine::from_spans(std::mem::take(&mut rotated_line)));
+            }
             // Allow 30% of font size variance, measured on the *smaller* of the
             // two sizes so tolerance scales with the line, not with whichever
             // span happens to arrive next.
@@ -1759,6 +1816,9 @@ impl<'a> LayoutAnalyzer<'a> {
         // Don't forget the last line
         if !current_line_spans.is_empty() {
             lines.push(TextLine::from_spans(current_line_spans));
+        }
+        if !rotated_line.is_empty() {
+            lines.push(TextLine::from_spans(rotated_line));
         }
 
         attach_script_lines(lines)
@@ -1796,6 +1856,11 @@ impl<'a> LayoutAnalyzer<'a> {
                 .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation())
                 .count();
             if visible_chars < 3 {
+                continue;
+            }
+            // A heading is read left to right: a line turned on the page -- an identifier
+            // stamped up the margin, a chart's axis title -- is no title, whatever its size.
+            if line.is_rotated() {
                 continue;
             }
 
@@ -1943,8 +2008,11 @@ impl<'a> LayoutAnalyzer<'a> {
             // Check if this should start a new block
             let local_pitch = local_line_pitch(&spacings, &sizes, i);
             let prev_wraps = column_right - prev_line.ink_right() < prev_line.font_size * FLUSH_EM;
-            let should_break =
-                Self::should_break_block(prev_line, &line, avg_spacing, local_pitch, prev_wraps);
+            // A rotated line is a block of its own: it continues no paragraph read left to
+            // right, and none continues it.
+            let should_break = prev_line.is_rotated()
+                || line.is_rotated()
+                || Self::should_break_block(prev_line, &line, avg_spacing, local_pitch, prev_wraps);
 
             if should_break {
                 // Create block from current lines
@@ -2609,6 +2677,123 @@ fn sampled_union_area(rects: &[Bounds]) -> f32 {
 
 /// Whether text set with text matrix `tm` under `ctm` runs left to right along a
 /// horizontal baseline — within about five degrees, as text set on a horizontal line is.
+/// The text-space x axis in device space, as a unit vector: the direction a run's baseline
+/// runs on the page. Left to right when the matrices leave no direction to take.
+fn baseline_direction(tm: &[f32; 6], ctm: &[f32; 6]) -> [f32; 2] {
+    let dx = tm[0] * ctm[0] + tm[1] * ctm[2];
+    let dy = tm[0] * ctm[1] + tm[1] * ctm[3];
+    let length = dx.hypot(dy);
+    if length > f32::EPSILON {
+        [dx / length, dy / length]
+    } else {
+        TextSpan::LEFT_TO_RIGHT
+    }
+}
+
+/// How far apart, in font sizes, the runs of one rotated line may stand and still be one line
+/// (see [`join_rotated_runs`]); past a space's width they are separate words.
+const ROTATED_JOIN_GAP: f32 = 2.0;
+
+/// The runs set along a baseline that is not horizontal, joined along it, each line one span.
+///
+/// Every reader of spans groups them into lines left to right, by their baselines' height. A
+/// run turned to read up the page has no such baseline: a chart's date labels drawn a few
+/// glyphs at a time (`0`, `1/`, `201`, `9`) were taken as text on as many lines as they had
+/// pieces -- every label's `0` on one line, every `201` on the next. The pieces of each
+/// rotated line are joined here, in reading order along their own baseline, with a space
+/// where they stand a word space apart, and the line is placed by the box it covers on the
+/// page: `x` and `width` are its horizontal extent and `y` is where the reading starts, so a
+/// row of labels turned the same way reads left to right like any line. Runs of one direction
+/// are one line when their baselines are within a third of a font size of each other and
+/// they follow within [`ROTATED_JOIN_GAP`] font sizes.
+pub(crate) fn join_rotated_runs(spans: Vec<TextSpan>) -> Vec<TextSpan> {
+    let (rotated, mut out): (Vec<TextSpan>, Vec<TextSpan>) =
+        spans.into_iter().partition(TextSpan::is_rotated);
+    if rotated.is_empty() {
+        return out;
+    }
+    let along = |s: &TextSpan| s.x * s.direction[0] + s.y * s.direction[1];
+    let across = |s: &TextSpan| s.y * s.direction[0] - s.x * s.direction[1];
+
+    let mut by_direction: Vec<Vec<TextSpan>> = Vec::new();
+    for span in rotated {
+        let same = by_direction.iter_mut().find(|group| {
+            let d = group[0].direction;
+            d[0] * span.direction[0] + d[1] * span.direction[1] > 0.999
+        });
+        match same {
+            Some(group) => group.push(span),
+            None => by_direction.push(vec![span]),
+        }
+    }
+    for mut group in by_direction {
+        group.sort_by(|a, b| across(a).total_cmp(&across(b)));
+        let mut lines: Vec<Vec<TextSpan>> = Vec::new();
+        for span in group {
+            match lines.last_mut() {
+                Some(line)
+                    if (across(&span) - across(&line[0])).abs()
+                        <= span.font_size.min(line[0].font_size) * 0.3 =>
+                {
+                    line.push(span)
+                }
+                _ => lines.push(vec![span]),
+            }
+        }
+        for mut line in lines {
+            line.sort_by(|a, b| along(a).total_cmp(&along(b)));
+            let mut run: Option<TextSpan> = None;
+            for span in line {
+                let Some(current) = run.as_mut() else {
+                    run = Some(span);
+                    continue;
+                };
+                let size = current.font_size.max(span.font_size);
+                let gap = along(&span) - (along(current) + current.width);
+                if gap > size * ROTATED_JOIN_GAP {
+                    out.extend(run.replace(span).map(placed_on_page));
+                    continue;
+                }
+                if gap > size * SPACE_EM * 0.6
+                    && !current.text.ends_with(char::is_whitespace)
+                    && !span.text.starts_with(char::is_whitespace)
+                {
+                    current.text.push(' ');
+                }
+                current.text.push_str(&span.text);
+                current.width = (along(&span) + span.width - along(current)).max(current.width);
+                current.width_measured &= span.width_measured;
+                current.is_bold &= span.is_bold;
+                current.is_italic &= span.is_italic;
+            }
+            out.extend(run.map(placed_on_page));
+        }
+    }
+    out
+}
+
+/// A rotated line placed by the box it covers on the page: from where its reading starts, a
+/// font size of glyphs high on the side its glyphs stand, along its baseline for `width`.
+fn placed_on_page(mut line: TextSpan) -> TextSpan {
+    let [dx, dy] = line.direction;
+    // Glyphs stand on the baseline's left as the line reads: the text-space y axis, whose
+    // horizontal part is `-dy`.
+    let up = -dy;
+    let (length, height) = (line.width, line.font_size);
+    let xs = [
+        line.x,
+        line.x + dx * length,
+        line.x + up * height,
+        line.x + dx * length + up * height,
+    ];
+    let left = xs.iter().copied().fold(f32::INFINITY, f32::min);
+    let right = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    line.x = left;
+    line.width = right - left;
+    line.ink_width = Some(line.width);
+    line
+}
+
 fn reads_left_to_right(tm: &[f32; 6], ctm: &[f32; 6]) -> bool {
     // The text-space x axis in device space.
     let dx = tm[0] * ctm[0] + tm[1] * ctm[2];
@@ -3043,14 +3228,18 @@ fn attach_word_space(
     y: f32,
     font_size: f32,
     measured_width: Option<f32>,
+    direction: [f32; 2],
 ) {
     let Some(prev) = spans.last_mut() else {
         return;
     };
 
     // A whitespace run that opens a line is indentation, not a word gap: only
-    // join it to a run on the same baseline.
-    if (prev.y - y).abs() > font_size.max(prev.font_size) * 0.3 {
+    // join it to a run on the same baseline -- along the direction both read in, so a word
+    // space in text turned up the page joins too.
+    let [dx, dy] = direction;
+    let across = (y - prev.y) * dx - (x - prev.x) * dy;
+    if prev.direction != direction || across.abs() > font_size.max(prev.font_size) * 0.3 {
         return;
     }
 
@@ -3065,7 +3254,8 @@ fn attach_word_space(
     // after merging).
     match measured_width {
         Some(width) if prev.width > 0.0 => {
-            prev.width = prev.width.max(x + width - prev.x);
+            let along = (x - prev.x) * dx + (y - prev.y) * dy;
+            prev.width = prev.width.max(along + width);
         }
         _ if prev.width > 0.0 => {
             prev.width += estimate_text_width(" ", prev.font_size);
@@ -3121,6 +3311,11 @@ fn is_script_of(line: &TextLine, owner: &TextLine) -> bool {
     if line.spans.is_empty() || owner.spans.is_empty() || size <= 0.0 {
         return false;
     }
+    // A script rides its owner's baseline: a line turned on the page has none in common with
+    // the text read left to right beside it.
+    if line.is_rotated() || owner.is_rotated() {
+        return false;
+    }
     let smaller = line.spans.iter().all(|s| s.font_size <= size * 0.9);
     let near = (line.y - owner.y).abs() <= size * 0.6;
     if !smaller || !near {
@@ -3158,6 +3353,12 @@ fn is_script_of(line: &TextLine, owner: &TextLine) -> bool {
 }
 
 impl TextLine {
+    /// Whether the line is text turned on the page: every span of it rotated (see
+    /// [`join_rotated_runs`]).
+    pub(crate) fn is_rotated(&self) -> bool {
+        !self.spans.is_empty() && self.spans.iter().all(TextSpan::is_rotated)
+    }
+
     /// This line with `scripts`' spans merged in, keeping this line's baseline.
     fn with_scripts(self, scripts: TextLine) -> TextLine {
         let (y, font_size) = (self.y, self.font_size);
@@ -3334,6 +3535,98 @@ mod tests {
             (sampled - exact).abs() / exact < 0.01,
             "{sampled} vs {exact}"
         );
+    }
+
+    /// A piece of a run turned to read up the page: `width` along its own baseline.
+    fn up(text: &str, x: f32, y: f32, width: f32) -> TextSpan {
+        let mut span = TextSpan::new(text.into(), x, y, 9.0, "F".into());
+        span.width = width;
+        span.width_measured = true;
+        span.direction = [0.0, 1.0];
+        span
+    }
+
+    /// Chart labels turned to read up the page, each drawn in pieces: each label is one span,
+    /// and the row of labels reads left to right like a line.
+    #[test]
+    fn the_pieces_of_a_rotated_label_are_one_span() {
+        let mut spans = Vec::new();
+        for (i, year) in ["9", "0"].into_iter().enumerate() {
+            let x = 100.0 + i as f32 * 20.0;
+            spans.push(up("0", x, 50.0, 5.0));
+            spans.push(up("1/", x, 55.0, 7.5));
+            spans.push(up("201", x, 62.5, 15.0));
+            spans.push(up(year, x, 77.5, 5.0));
+        }
+        spans.push(TextSpan::new("Source".into(), 90.0, 30.0, 9.0, "F".into()));
+        let joined = join_rotated_runs(spans);
+        let mut labels: Vec<&TextSpan> = joined.iter().filter(|s| s.is_rotated()).collect();
+        labels.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let texts: Vec<&str> = labels.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["01/2019", "01/2010"]);
+        // Placed by the box it covers: a font size wide, left of the baseline it reads up.
+        assert_eq!(
+            (labels[0].x, labels[0].width, labels[0].y),
+            (91.0, 9.0, 50.0)
+        );
+        assert!(joined.iter().any(|s| s.text == "Source" && !s.is_rotated()));
+    }
+
+    /// A word space drawn as its own run in text turned up the page joins the run before it.
+    #[test]
+    fn a_word_space_in_rotated_text_joins_its_run() {
+        let mut spans = vec![up("Homes", 54.0, 148.0, 70.0)];
+        attach_word_space(&mut spans, 54.0, 218.9, 9.0, Some(4.9), [0.0, 1.0]);
+        assert_eq!(spans[0].text, "Homes ");
+        assert!((spans[0].width - 75.8).abs() < 0.01, "{}", spans[0].width);
+    }
+
+    /// Small text beside a large line turned on the page is no script of it: the two share no
+    /// baseline, and each stays a line of its own.
+    #[test]
+    fn small_text_beside_a_rotated_line_is_not_its_script() {
+        let mut tab = up("Homes and design", 54.0, 676.0, 150.0);
+        tab.font_size = 20.0;
+        let body = TextSpan::new("a fuzzy head".into(), 80.0, 674.0, 9.0, "F".into());
+        let lines = attach_script_lines(vec![
+            TextLine::from_spans(vec![tab]),
+            TextLine::from_spans(vec![body]),
+        ]);
+        assert_eq!(lines.len(), 2);
+    }
+
+    /// Pieces of a rotated line a word space apart are words of one line; pieces far apart
+    /// along it are separate lines.
+    #[test]
+    fn a_rotated_line_keeps_its_word_gaps_and_ends_at_a_wide_gap() {
+        let spans = vec![
+            up("Total", 40.0, 100.0, 20.0),
+            up("revenue", 40.0, 123.0, 30.0),
+            up("Notes", 40.0, 300.0, 20.0),
+        ];
+        let mut texts: Vec<String> = join_rotated_runs(spans)
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
+        texts.sort();
+        assert_eq!(texts, ["Notes", "Total revenue"]);
+    }
+
+    /// Text set upside down reads right to left on the page: its pieces join in the order
+    /// they are read.
+    #[test]
+    fn upside_down_pieces_join_in_reading_order() {
+        let piece = |text: &str, x: f32| {
+            let mut span = TextSpan::new(text.into(), x, 200.0, 9.0, "F".into());
+            span.width = 10.0;
+            span.width_measured = true;
+            span.direction = [-1.0, 0.0];
+            span
+        };
+        let joined = join_rotated_runs(vec![piece("ab", 300.0), piece("cd", 290.0)]);
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].text, "abcd");
+        assert_eq!((joined[0].x, joined[0].width), (280.0, 20.0));
     }
 
     #[test]
@@ -3598,6 +3891,26 @@ mod tests {
         for no in ["4 Basis", "1999", "page 4", "4.2a", "", "ab", "§4"] {
             assert!(!is_bare_section_number(no), "{no}");
         }
+    }
+
+    /// A large line turned up the margin -- an identifier stamped beside the text -- is no
+    /// heading: a heading is read left to right.
+    #[test]
+    fn test_detect_headings_leaves_a_rotated_line_alone() {
+        let stats = body_12pt_stats(&[20.0]);
+        let mut stamp = line_at("arXiv:2312.15166v2 [cs.CL]", 80.0, 20.0, "Helvetica");
+        for span in &mut stamp.spans {
+            span.direction = [0.0, 1.0];
+        }
+        let lines = vec![
+            line_at("Body text before the stamp.", 100.0, 12.0, "Helvetica"),
+            stamp,
+            line_at("Body text after the stamp.", 60.0, 12.0, "Helvetica"),
+        ];
+
+        let result = LayoutAnalyzer::detect_headings(&stats, lines);
+
+        assert!(!result[1].is_heading);
     }
 
     #[test]
@@ -4265,6 +4578,7 @@ mod tests {
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
                 is_italic: false,
+                direction: TextSpan::LEFT_TO_RIGHT,
             })
             .collect();
 
@@ -4288,6 +4602,7 @@ mod tests {
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
                 is_italic: false,
+                direction: TextSpan::LEFT_TO_RIGHT,
             },
             TextSpan {
                 text: "World".to_string(),
@@ -4300,6 +4615,7 @@ mod tests {
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
                 is_italic: false,
+                direction: TextSpan::LEFT_TO_RIGHT,
             },
         ];
 
@@ -4318,10 +4634,10 @@ mod tests {
             "Helvetica".to_string(),
         )];
 
-        attach_word_space(&mut spans, 0.0, 500.0, 12.0, None);
+        attach_word_space(&mut spans, 0.0, 500.0, 12.0, None, TextSpan::LEFT_TO_RIGHT);
         assert_eq!(spans[0].text, "Hello ");
 
-        attach_word_space(&mut spans, 0.0, 500.0, 12.0, None);
+        attach_word_space(&mut spans, 0.0, 500.0, 12.0, None, TextSpan::LEFT_TO_RIGHT);
         assert_eq!(spans[0].text, "Hello ", "must not accumulate spaces");
     }
 
@@ -4335,7 +4651,7 @@ mod tests {
             "Helvetica".to_string(),
         )];
 
-        attach_word_space(&mut spans, 0.0, 400.0, 12.0, None);
+        attach_word_space(&mut spans, 0.0, 400.0, 12.0, None, TextSpan::LEFT_TO_RIGHT);
         assert_eq!(spans[0].text, "Hello", "indentation is not a word gap");
     }
 
