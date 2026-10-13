@@ -1739,7 +1739,11 @@ impl<'a> LayoutAnalyzer<'a> {
             let lines = self.group_spans_into_lines_single_column(group_spans);
             all_lines.extend(lines);
         }
-        all_lines
+        // A script can be a region of its own: lines set across a gutter are cut off one band
+        // at a time, and a superscript raised into the gap above its line has a baseline of its
+        // own, so it is a band between its line and the one above. Its owner is then its
+        // neighbour in reading order across that boundary -- the same test as within a region.
+        attach_script_lines(all_lines)
     }
 
     /// Simple Y-based line grouping for single-column layout.

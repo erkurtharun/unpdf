@@ -94,6 +94,20 @@ fn helvetica_bold_with_widths() -> Vec<u8> {
     .into_bytes()
 }
 
+/// Helvetica advance of a lowercase letter, a digit or space, in thousandths of an em.
+pub fn helvetica_advance(c: char) -> f32 {
+    const LOWER: [f32; 26] = [
+        556.0, 556.0, 500.0, 556.0, 556.0, 278.0, 556.0, 556.0, 222.0, 222.0, 500.0, 222.0, 833.0,
+        556.0, 556.0, 556.0, 556.0, 333.0, 500.0, 278.0, 556.0, 500.0, 722.0, 500.0, 500.0, 500.0,
+    ];
+    match c {
+        ' ' => 278.0,
+        'a'..='z' => LOWER[(c as u8 - b'a') as usize],
+        '0'..='9' => 556.0,
+        _ => 0.0,
+    }
+}
+
 /// Helvetica-Bold advance of a lowercase letter or space, in thousandths of an em.
 pub fn helvetica_bold_advance(c: char) -> f32 {
     const LOWER: [f32; 26] = [
@@ -212,6 +226,54 @@ pub fn scripted_lines_pdf() -> Vec<u8> {
           /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
             .to_vec(),
         stream_object(&format!("<</Length {}>>", content.len()), content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
+/// One page whose top is an abstract set across the full width, over two columns of body
+/// text — and one abstract line carries a unit's superscript (`mol` + `1`, as in mol⁻¹) in
+/// the gap between it and the line above. Lines set across a gutter are cut off one band at
+/// a time, so the superscript, on a baseline of its own, lands in a band of its own.
+pub fn scripted_band_over_columns_pdf() -> Vec<u8> {
+    let width = |s: &str, size: f32| s.chars().map(helvetica_advance).sum::<f32>() / 1000.0 * size;
+    let mut content = String::new();
+    let abstract_lines = [
+        "In nature, methanogenic archaea couple methanogenesis and autotrophic growth under",
+        "highly variable conditions; two maximal growth yields were found, near 3 and 7 g of",
+        "methane formed mol",
+        "under low and high hydrogen conditions, and the distinct values can be explained.",
+    ];
+    for (row, line) in abstract_lines.iter().enumerate() {
+        let y = 760 - row as i32 * 12;
+        content.push_str(&format!("BT /F1 10 Tf 72 {y} Td ({line}) Tj ET "));
+    }
+    // The superscript right after `mol`, raised into the gap above its line, and the rest of
+    // that line after it.
+    let sup_x = 72.0 + width("methane formed mol", 10.0);
+    content.push_str(&format!("BT /F1 6.5 Tf {sup_x:.2} 740 Td (1) Tj ET "));
+    let rest_x = sup_x + width("1", 6.5);
+    content.push_str(&format!(
+        "BT /F1 10 Tf {rest_x:.2} 736 Td (, for growth measured under a wide range of conditions.) Tj ET "
+    ));
+    for row in 0..8 {
+        let y = 690 - row * 12;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 72 {y} Td (Left column body line number {row} of text.) Tj ET "
+        ));
+        content.push_str(&format!(
+            "BT /F1 10 Tf 310 {y} Td (Right column body line number {row} of text.) Tj ET "
+        ));
+    }
+    content.push('\n');
+    let content = content.into_bytes();
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), &content),
         HELVETICA.to_vec(),
     ];
     assemble(objects)

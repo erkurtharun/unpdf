@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A superscript or subscript in lines set across the page stays on its line.** Lines that run
+  across a page above its columns (an abstract over a two-column body, a displayed formula) are
+  read one band at a time, and a script raised or lowered off its line's baseline was a band of
+  its own — so `mol⁻¹` came out as the line above, then `1` as a paragraph of its own, then
+  `methane formed mol , for …`, and an exponent such as `[0, 1]ᵈ` or `e⁻⁽ˣ²⁺…⁾` was pulled out
+  of its formula. A script is now joined to the line it belongs to whichever region it falls in.
+
 ## 0.43.0 — 2026-10-13
 
 ### Fixed
