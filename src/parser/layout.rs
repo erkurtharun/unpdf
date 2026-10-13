@@ -47,6 +47,11 @@ pub struct TextSpan {
     /// covers on the page (see [`join_rotated_runs`]): `x` and `width` are that box's horizontal
     /// extent, `y` is where the reading starts.
     pub direction: [f32; 2],
+    /// The room between two letters of a word in the run, in thousandths of an em: the
+    /// character spacing (`Tc`) it was set with, less where its strings stand closer. A word
+    /// gap is room well beyond the letters' -- in the run, or, for a run that shows no letter
+    /// room of its own but its `Tc`, on its line (see [`space_out_wide_tracking`]).
+    pub letter_spacing: f32,
 }
 
 /// The advance of a space, in multiples of the font size -- what most text faces draw.
@@ -101,6 +106,7 @@ impl TextSpan {
             is_bold,
             is_italic,
             direction: Self::LEFT_TO_RIGHT,
+            letter_spacing: 0.0,
         }
     }
 
@@ -1612,6 +1618,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             );
                             let mut span =
                                 TextSpan::new(text, x, y, effective_size, text_state.font.clone());
+                            span.letter_spacing = letter_room;
                             // A vertical font writes down the page by design and is read as it
                             // always was; any other run not read left to right carries its
                             // direction, to be joined along it.
@@ -3380,6 +3387,7 @@ impl TextLine {
 /// a fragment is a boundary in the middle of a word. Applying it twice is harmless;
 /// joined runs are no longer fragments.
 pub(crate) fn coalesce_runs(mut spans: Vec<TextSpan>) -> Vec<TextSpan> {
+    space_out_wide_tracking(&mut spans);
     spans.sort_by(|a, b| {
         let y_cmp = b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal);
         if y_cmp == std::cmp::Ordering::Equal {
@@ -3389,6 +3397,96 @@ pub(crate) fn coalesce_runs(mut spans: Vec<TextSpan>) -> Vec<TextSpan> {
         }
     });
     merge_fragmented_spans(spans)
+}
+
+/// How far, in ems, a run may stand from another and still be evidence of its line's letter
+/// room (see [`space_out_wide_tracking`]).
+const TRACKING_NEIGHBOUR_EMS: f32 = 3.0;
+
+/// Space out the letters of a run whose letter room stands out on its line.
+///
+/// A run's word gaps are measured from its own letter room (see `letter_room`), and a run of
+/// one string shows none but its character spacing: a producer that draws the two letters
+/// either side of a word gap as one string (`(ya)Tj` -- the `y` of `ability` and the `a` of
+/// `and`) and opens them with a wide `Tc` leaves no gap the run can see. Its line can: the runs
+/// around it set their letters closer. When a run's letter room exceeds its line's -- the
+/// median over the runs of two letters or more beside it, by their letters, and never below
+/// none -- by a word gap
+/// ([`maybe_insert_space_tj`]'s measure), each of its letters stands a word apart. A
+/// letter-spaced heading is spaced throughout its line, and stands out from nothing.
+fn space_out_wide_tracking(spans: &mut [TextSpan]) {
+    let letters = |s: &TextSpan| s.text.chars().filter(|c| c.is_alphanumeric()).count();
+    let mut order: Vec<usize> = (0..spans.len())
+        .filter(|&i| !spans[i].is_rotated())
+        .collect();
+    order.sort_by(|&a, &b| spans[b].y.total_cmp(&spans[a].y));
+    let mut start = 0;
+    while start < order.len() {
+        let first = &spans[order[start]];
+        let mut end = start + 1;
+        while end < order.len()
+            && (spans[order[end]].y - first.y).abs()
+                <= first.font_size.min(spans[order[end]].font_size) * 0.3
+        {
+            end += 1;
+        }
+        let line: Vec<usize> = order[start..end].to_vec();
+        start = end;
+        if line.len() < 2 {
+            continue;
+        }
+        for &i in &line {
+            let span = &spans[i];
+            if letters(span) < 2 || span.text.trim().contains(char::is_whitespace) {
+                continue;
+            }
+            // The line's letter room: the median over the runs beside it, each counted by its
+            // letters. Only a run of two letters or more has room between letters to show --
+            // a lone capital set larger before small capitals has none -- and only runs within
+            // a few ems are the same text: a column beside it on the same baseline is not.
+            let (left, right) = span.ink_extent();
+            let reach = span.font_size * TRACKING_NEIGHBOUR_EMS;
+            let mut others: Vec<(f32, usize)> = line
+                .iter()
+                .filter(|&&j| j != i)
+                .filter(|&&j| {
+                    let (l, r) = spans[j].ink_extent();
+                    l <= right + reach && r >= left - reach
+                })
+                .map(|&j| (spans[j].letter_spacing, letters(&spans[j])))
+                .filter(|&(_, n)| n >= 2)
+                .collect();
+            let total: usize = others.iter().map(|&(_, n)| n).sum();
+            if total == 0 {
+                continue;
+            }
+            others.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut seen = 0;
+            let typical = others
+                .iter()
+                .find(|&&(_, n)| {
+                    seen += n;
+                    seen * 2 >= total
+                })
+                .map_or(0.0, |&(room, _)| room);
+            // Never measured from below no room at all: beside tightly tracked text, a run set
+            // with ordinary letter spacing is not spaced out.
+            let room = span.letter_spacing - typical.max(0.0);
+            let mut text = String::with_capacity(span.text.len() * 2);
+            let mut prev: Option<char> = None;
+            for c in span.text.chars() {
+                // Spaced-out punctuation -- a contents leader's dots -- is a run of marks.
+                let between_marks =
+                    prev.is_some_and(|p| !p.is_alphanumeric()) && !c.is_alphanumeric();
+                if prev.is_some() && !between_marks && !c.is_whitespace() {
+                    maybe_insert_space_tj(&mut text, room);
+                }
+                text.push(c);
+                prev = Some(c);
+            }
+            spans[i].text = text;
+        }
+    }
 }
 
 /// Whether `next` continues `prev` on the same line, in the same font, starting where
@@ -4579,6 +4677,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
+                letter_spacing: 0.0,
             })
             .collect();
 
@@ -4603,6 +4702,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
+                letter_spacing: 0.0,
             },
             TextSpan {
                 text: "World".to_string(),
@@ -4616,6 +4716,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
+                letter_spacing: 0.0,
             },
         ];
 

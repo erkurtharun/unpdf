@@ -1925,6 +1925,7 @@ mod tests {
             is_bold: false,
             is_italic: false,
             direction: TextSpan::LEFT_TO_RIGHT,
+            letter_spacing: 0.0,
         }
     }
 
@@ -2282,6 +2283,7 @@ mod tests {
             is_bold: false,
             is_italic: false,
             direction: TextSpan::LEFT_TO_RIGHT,
+            letter_spacing: 0.0,
         }
     }
 

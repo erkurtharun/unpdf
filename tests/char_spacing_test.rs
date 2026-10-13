@@ -74,3 +74,39 @@ fn a_word_gap_in_tightly_tracked_type_is_a_gap() {
         "ALICE JONES"
     );
 }
+
+/// A producer that draws the letters either side of a word gap as one string (`(ya)` — the `y`
+/// of `ability`, the `a` of `and`) and opens them with a wide `Tc`: the string shows no letter
+/// room but its `Tc`, the strings around it set their letters closer, and the gap is a space.
+#[test]
+fn a_wide_tc_on_a_lone_two_letter_string_is_a_word_gap_on_its_line() {
+    let text = text_of("0 Tc (the abilit) Tj .27 Tc (ya) Tj 0 Tc (nd more) Tj");
+    assert_eq!(text.trim(), "the ability and more");
+}
+
+/// A letter-spaced heading has the same wide `Tc` in every string of its line: it stands out
+/// from nothing, and stays one word.
+#[test]
+fn a_letter_spaced_heading_drawn_in_pieces_stays_one_word() {
+    assert_eq!(
+        text_of(".246 Tc (DEFINI) Tj (TIONS) Tj").trim(),
+        "DEFINITIONS"
+    );
+}
+
+/// Beside tightly tracked text, a word set with ordinary letter spacing is not spaced out.
+#[test]
+fn ordinary_tracking_beside_tight_tracking_is_not_a_gap() {
+    assert_eq!(
+        text_of("-.05 Tc (tight text here ) Tj .08 Tc (word) Tj").trim(),
+        "tight text here word"
+    );
+}
+
+/// A heading in small capitals: a larger capital, then the rest of the word letter-spaced. The
+/// capital alone shows no room between letters, and the word stays a word.
+#[test]
+fn small_capitals_after_a_larger_initial_stay_one_word() {
+    let text = text_of("0 Tc (D) Tj 8 0 0 8 45 300 Tm .25 Tc (EFINITIONS) Tj");
+    assert!(!text.contains("E F"), "{text}");
+}

@@ -35,13 +35,22 @@
   found past at most two lines that reach well across it, and those lines are read as bands of
   their own.
 
+- **A word gap made with character spacing on a two-letter string is a space.** Some producers
+  draw the letters either side of a word gap as one string and open them with a wide `Tc`
+  (`ability and` drawn as `…abilit`, `ya`, `nd…`); the string showed no room between letters but
+  its `Tc`, so the gap was read as letter spacing (`abilityand`, `athird`). A run whose letter
+  room exceeds that of the runs of two letters or more beside it, by a word gap, now has its
+  letters spaced. A letter-spaced heading — the same spacing throughout, or small capitals after
+  a larger initial — stays one word.
+
 ### Changed
 
-- **Breaking: `TextSpan` has a `direction` field** — the direction its baseline runs on the page,
+- **Breaking: `TextSpan` has `direction` and `letter_spacing` fields** — the direction its baseline runs on the page,
   a unit vector (`TextSpan::LEFT_TO_RIGHT` for most text; `TextSpan::is_rotated`). A rotated
   span is one joined line, placed by the box it covers: `x` and `width` are its horizontal
-  extent and `y` is where its reading starts. Code building `TextSpan` with a struct literal
-  needs the field (or `TextSpan::new`, which sets it).
+  extent and `y` is where its reading starts. `letter_spacing` is the room between two letters
+  of a word in the run, in thousandths of an em. Code building `TextSpan` with a struct literal
+  needs the fields (or `TextSpan::new`, which sets them).
 - **Merged cells of a ruled table are reported.** A cell with nothing drawn along an edge its
   neighbours are ruled at — a header over two columns, a row label over three rows — is one
   cell with `rowspan`/`colspan` (JSON, and an HTML table under `TableFallback::Html`), its text
