@@ -70,7 +70,7 @@ every key is optional and an absent one keeps the default:
 | `include_frontmatter` | `bool` — YAML frontmatter with the document metadata |
 | `page_markers` | `"none"` (default) or `"comment"` — `<!-- page N -->` at each page boundary |
 | `escape_special_chars` | `bool` (default `True`) — escape text that would read as Markdown syntax |
-| `table_fallback` | `"markdown"` (default), `"html"` or `"ascii"` — how a table Markdown cannot express is written |
+| `table_fallback` | `"markdown"` (default), `"html"` or `"ascii"` — how a table with merged cells is written. In Markdown a merged cell's text is in the first position it covers and the rest are empty, so a value spanning columns (Min / Typ / Max) reads as the first of them; `"html"` keeps `rowspan`/`colspan` |
 | `max_heading_level` | `int` 1–6 (default 6) — deeper headings take this level |
 | `preserve_line_breaks` | `bool` — keep line breaks inside paragraphs |
 | `list_marker` | one character (default `"-"`) |

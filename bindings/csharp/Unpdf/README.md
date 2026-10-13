@@ -63,6 +63,11 @@ default 6), `PreserveLineBreaks`, `ListMarker` (default `'-'`), `Cleanup` (a `Cl
 throws `UnpdfException` with `UnpdfErrorKind.InvalidArgument`; a page the document does not have,
 with `UnpdfErrorKind.PageOutOfRange`.
 
+Markdown has no merged cells. With the default `TableFallback.Markdown` a merged cell's text is in
+the first position it covers and the positions it covers are empty, so a value spanning columns —
+a dimension spanning Min, Typ and Max — reads as the first of them. `TableFallback.Html` writes a
+table with merged cells as an HTML table that keeps `rowspan` and `colspan`; `ToJson` keeps them too.
+
 ### Per-page extraction
 
 ```csharp

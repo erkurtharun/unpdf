@@ -48,6 +48,13 @@
   columns inside a frame -- running text filling every column on every line -- is kept from being
   read as one record per line: lines that read as prose, column by column, are not records.
 
+### Documentation
+
+- **What a Markdown table does with merged cells, and how to keep them.** Markdown has no row or
+  column spans: with the default table fallback a merged cell's text is in the first position it
+  covers, so a value spanning Min, Typ and Max reads as a Min. The table fallback's documentation
+  (Rust, .NET, Python) now says so, and that the HTML fallback keeps `rowspan` and `colspan`.
+
 ## 0.43.0 — 2026-10-13
 
 ### Fixed

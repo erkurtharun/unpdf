@@ -240,13 +240,17 @@ pub enum PageMarkerStyle {
     Comment,
 }
 
-/// How to render complex tables that can't be expressed in simple Markdown.
+/// How a table with merged cells is written: Markdown has no row or column spans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TableFallback {
-    /// Use standard Markdown table syntax
+    /// A Markdown table, every row as wide as the table: a merged cell's text is in the first
+    /// position it covers and the positions it covers are empty. A reader of the Markdown
+    /// cannot tell a value spanning columns -- a dimension spanning Min, Typ and Max -- from a
+    /// value in the first of them; [`TableFallback::Html`] keeps the spans, as the JSON does.
     #[default]
     Markdown,
-    /// Use HTML table tags for complex tables
+    /// An HTML table with `rowspan` and `colspan` for a table with merged cells; a table
+    /// without them stays a Markdown table.
     Html,
     /// Use ASCII art tables
     Ascii,

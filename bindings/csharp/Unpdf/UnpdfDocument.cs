@@ -12,10 +12,18 @@ namespace Unpdf;
 /// </summary>
 public enum TableFallback
 {
-    /// <summary>A Markdown table (the default).</summary>
+    /// <summary>
+    /// A Markdown table (the default), every row as wide as the table: a merged cell's text is
+    /// in the first position it covers and the positions it covers are empty. A reader of the
+    /// Markdown cannot tell a value spanning columns (a dimension spanning Min, Typ and Max)
+    /// from a value in the first of them; <see cref="Html"/> keeps the spans, as the JSON does.
+    /// </summary>
     Markdown,
 
-    /// <summary>An HTML table that keeps rowspan and colspan.</summary>
+    /// <summary>
+    /// An HTML table that keeps rowspan and colspan, for a table with merged cells; a table
+    /// without them stays a Markdown table.
+    /// </summary>
     Html,
 
     /// <summary>A table drawn in ASCII characters.</summary>
