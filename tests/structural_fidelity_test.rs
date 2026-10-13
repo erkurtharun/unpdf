@@ -118,6 +118,26 @@ fn two_column_fixture_preserves_left_to_right_reading_order() {
     assert_min("two_column_pdf", score(&doc, &expected), PERFECT);
 }
 
+/// A title set large over two columns stands closer above their first rows than it is tall.
+/// Placed by its baseline with its height hung below it, its box covered those rows, kept them
+/// in the title's band, and they were read across both columns before the columns split.
+#[test]
+fn a_large_title_over_two_columns_does_not_pull_their_first_rows_into_its_band() {
+    let doc = parse(&common::large_title_over_columns_pdf());
+    let text = unpdf::render::to_text(&doc, &unpdf::render::RenderOptions::default())
+        .expect("text renders");
+    let left_last = text
+        .find("Left column body line number 7")
+        .expect("left column");
+    let right_first = text
+        .find("Right column body line number 0")
+        .expect("right column");
+    assert!(
+        left_last < right_first,
+        "the columns' first rows were read across: {text:?}"
+    );
+}
+
 /// Predictive-CMap CJK decoding (`parser::cmap_table`) — no embedded font
 /// program, no `ToUnicode`, only `CIDSystemInfo`. See `common::cjk_pdf`'s
 /// doc comment for how the two CIDs were verified against `lookup_cid`

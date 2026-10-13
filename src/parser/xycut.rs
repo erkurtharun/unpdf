@@ -1,6 +1,7 @@
 //! Recursive XY-Cut algorithm for document layout segmentation.
 
-/// A rectangular region with position and size.
+/// A rectangular region with position and size, in page space (y grows up the page): `y` is
+/// its top edge and [`Block::bottom`] its bottom edge, `height` below it.
 #[derive(Debug, Clone, Copy)]
 pub struct Block {
     pub x: f32,
@@ -582,11 +583,13 @@ fn margin_strip(blocks: &[Block], min_x: f32, max_x: f32, config: &XyCutConfig) 
     if range <= 0.0 {
         return None;
     }
-    // Text on one line shares its baseline to within a point or two, whatever its size.
+    // Text on one line shares its baseline to within a point or two, whatever its size; a
+    // block's bottom stands just under its baseline, by a share of its height small enough
+    // for the bottoms of one line's blocks to agree as closely.
     let on_a_baseline_of = |b: &Block, others: &[&Block]| {
         others
             .iter()
-            .any(|o| (o.y - b.y).abs() <= b.height.max(o.height) * 0.2)
+            .any(|o| (o.bottom() - b.bottom()).abs() <= b.height.max(o.height) * 0.2)
     };
     let channels = vertical_channels(blocks, config.min_gutter);
     channels.into_iter().find(|&channel| {

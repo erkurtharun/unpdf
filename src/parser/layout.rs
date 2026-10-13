@@ -3078,14 +3078,24 @@ fn is_hangul_char(c: char) -> bool {
 /// Ink, not advance: a line's trailing space reaches toward the next column, and across a
 /// gutter half an em wide that is enough to join a line to the one beside it and read the two
 /// columns as a single line set across both.
+///
+/// And up from the baseline, not down from it: a block's `y` is its top, and a run's letters
+/// stand on its baseline ([`TextSpan::top`] to [`TextSpan::bottom`]). A box hung below the
+/// baseline is out by most of a line for body text, the same for every line, so it cancelled
+/// out — but a title set at 88 pt reached 88 pt under its own baseline, over the first rows of
+/// the columns beneath it, and kept them in its band to be read across both columns.
+///
+/// A run turned on the page keeps the box it had: its `y` is where its reading starts, not a
+/// baseline its letters stand on.
 pub(crate) fn xycut_blocks(spans: &[TextSpan]) -> Vec<super::xycut::Block> {
     spans
         .iter()
         .map(|s| {
             let (left, right) = s.ink_extent();
+            let top = if s.is_rotated() { s.y } else { s.top() };
             super::xycut::Block {
                 x: left,
-                y: s.y,
+                y: top,
                 width: right - left,
                 height: s.font_size,
             }

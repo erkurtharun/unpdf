@@ -10,6 +10,11 @@
   its own — so `mol⁻¹` came out as the line above, then `1` as a paragraph of its own, then
   `methane formed mol , for …`, and an exponent such as `[0, 1]ᵈ` or `e⁻⁽ˣ²⁺…⁾` was pulled out
   of its formula. A script is now joined to the line it belongs to whichever region it falls in.
+- **A large title over columns no longer pulls their first rows into its line.** Reading regions
+  were found from each run's box placed below its baseline instead of around its letters. For
+  body text the offset is the same on every line and changed nothing; for a display title the
+  box reached as far below the title as the title is tall, over the first rows of the columns
+  under it, which were then read across both columns before the columns split.
 
 ## 0.43.0 — 2026-10-13
 

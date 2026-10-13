@@ -279,6 +279,34 @@ pub fn scripted_band_over_columns_pdf() -> Vec<u8> {
     assemble(objects)
 }
 
+/// One page whose title is set large (48 pt) across the page with two columns of body text
+/// starting right under it — closer below its baseline than the title is tall, as a
+/// magazine's display title stands over its first rows.
+pub fn large_title_over_columns_pdf() -> Vec<u8> {
+    let mut content = String::from("BT /F1 48 Tf 72 720 Td (Display Title Over Columns) Tj ET ");
+    for row in 0..8 {
+        let y = 700 - row * 12;
+        content.push_str(&format!(
+            "BT /F1 10 Tf 72 {y} Td (Left column body line number {row} of text.) Tj ET "
+        ));
+        content.push_str(&format!(
+            "BT /F1 10 Tf 310 {y} Td (Right column body line number {row} of text.) Tj ET "
+        ));
+    }
+    content.push('\n');
+    let content = content.into_bytes();
+    let objects: Vec<Vec<u8>> = vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]\
+          /Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), &content),
+        HELVETICA.to_vec(),
+    ];
+    assemble(objects)
+}
+
 /// One page of five body lines, each drawn as three runs that abut exactly — the way a
 /// producer breaks a line at link or style boundaries — with the run boundaries falling
 /// at the same x on every line. The runs are one paragraph, not three table columns.
