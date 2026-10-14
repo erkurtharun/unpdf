@@ -121,13 +121,25 @@ pub(super) fn paragraph_markdown(para: &Paragraph, options: &RenderOptions) -> S
             }
         }
         output.push(' ');
-        push_inline_content(&mut output, &para.content, options);
+        push_body(&mut output, &para.content, options);
         output.push('\n');
     } else {
-        push_inline_content(&mut output, &para.content, options);
+        push_body(&mut output, &para.content, options);
         output.push_str("\n\n");
     }
     output
+}
+
+/// Append the inline content of a paragraph or a list item. The block's own markers are the
+/// renderer's; text that merely starts like one (`1. `, `* `, `# ` on a line of a paragraph
+/// the layout did not take for a list or a heading) is the document's and stays text.
+fn push_body(output: &mut String, content: &[InlineContent], options: &RenderOptions) {
+    if !options.escape_special_chars {
+        return push_inline_content(output, content, options);
+    }
+    let mut body = String::new();
+    push_inline_content(&mut body, content, options);
+    output.push_str(&markdown::escape_block_starts(&body));
 }
 
 /// Append a paragraph's inline content.
@@ -437,5 +449,34 @@ mod tests {
         // These are only special in a position the renderer controls, and escaping them
         // mid-sentence would put backslashes into ordinary prose.
         assert_eq!(escape_markdown("1. 2 - 3 # 4 > 5"), "1. 2 - 3 # 4 > 5");
+    }
+
+    /// ... and at the start of a paragraph's line the renderer does not put a marker there:
+    /// text that starts like one is the document's, and stays text. A heading's text opens
+    /// no block and is left alone; with escaping off the text is written as it is.
+    #[test]
+    fn a_paragraph_that_starts_like_a_block_marker_stays_a_paragraph() {
+        let options = RenderOptions::default();
+        let md = |para: &Paragraph| paragraph_markdown(para, &options);
+        assert_eq!(md(&Paragraph::with_text("1. Scope")), "1\\. Scope\n\n");
+        assert_eq!(md(&Paragraph::with_text("# 5 remain")), "\\# 5 remain\n\n");
+        assert_eq!(md(&Paragraph::with_text("> quoted")), "\\> quoted\n\n");
+        assert_eq!(
+            md(&Paragraph::with_text("2024. 10. 14")),
+            "2024\\. 10. 14\n\n"
+        );
+
+        let mut heading = Paragraph::with_text("1. Introduction");
+        heading.style.heading_level = Some(2);
+        assert_eq!(md(&heading), "## 1. Introduction\n\n");
+
+        let raw = RenderOptions {
+            escape_special_chars: false,
+            ..RenderOptions::default()
+        };
+        assert_eq!(
+            paragraph_markdown(&Paragraph::with_text("1. Scope"), &raw),
+            "1. Scope\n\n"
+        );
     }
 }

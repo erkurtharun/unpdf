@@ -55,6 +55,13 @@
   only places text just outside every cell. With columns found correctly, an article set in
   columns inside a frame -- running text filling every column on every line -- is kept from being
   read as one record per line: lines that read as prose, column by column, are not records.
+- **A paragraph whose text starts like a list item, a heading or a quote stays a paragraph.**
+  With `escape_special_chars` on (the default), a paragraph the layout did not take for a list
+  or a heading but whose text begins `1. `, `* `, `- `, `# ` or `> ` -- a date such as
+  `2024. 10. 14`, a note starting with an asterisk -- was written as is and read as a list item,
+  a heading or a block quote. The marker is now escaped (`1\.`, `\*`, `\#`, …) at the start of
+  each of its lines, as it is for a list item's text after its own marker; a heading's text is
+  left as it is.
 - **A table of two columns ruled only between them is read as a table.** Ruling-line detection
   needed two rules down a table, so a table drawn with one rule between a narrow label column and
   a wide column of lists -- and rules between its rows running out to its sides, no frame -- came
