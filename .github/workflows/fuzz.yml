@@ -1,9 +1,11 @@
 name: Fuzz
 
 # A PDF parser reads untrusted input. The targets in fuzz/ run briefly when parser code
-# changes on main, and longer every night; a crash fails the job, and libFuzzer prints the
-# crashing input (base64) in the log — reproduce it with `cargo fuzz run <target> <file>`.
-# Nothing is uploaded and nothing is published from here.
+# changes on main, and longer every night; a crash or a timeout fails the job. libFuzzer
+# prints the failing input in the log only when it is small (a few hundred bytes), so on
+# failure the unit it wrote (fuzz/artifacts/<target>/) is kept for 7 days as an artifact --
+# reproduce it with `cargo fuzz run <target> <file>`. The stack is symbolized when the runner
+# has an llvm-symbolizer. Nothing is uploaded on success; nothing is published.
 
 on:
   push:
@@ -40,6 +42,20 @@ jobs:
       - name: Install Rust (nightly — libFuzzer instrumentation)
         uses: dtolnay/rust-toolchain@nightly
 
+      # The sanitizer runtime symbolizes a crash or timeout stack only with an llvm-symbolizer
+      # it can find; without one the stack is bare addresses. Rust's llvm-tools component does
+      # not ship it, so use the runner's (or apt's). Fuzzing runs either way.
+      - name: Find llvm-symbolizer
+        continue-on-error: true
+        run: |
+          s=$(ls /usr/bin/llvm-symbolizer* /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | sort -V | tail -1)
+          if [ -z "$s" ]; then
+            sudo apt-get install -y --no-install-recommends llvm > /dev/null
+            s=$(command -v llvm-symbolizer)
+          fi
+          echo "symbolizer: $s"
+          echo "ASAN_SYMBOLIZER_PATH=$s" >> "$GITHUB_ENV"
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -69,3 +85,13 @@ jobs:
         run: |
           cargo fuzz run "${{ matrix.target }}" -- \
             -max_total_time="$SECONDS_TO_RUN" -timeout=10 -rss_limit_mb=2048
+
+      # The failing input is the finding: without it a timeout or crash cannot be reproduced.
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 7
