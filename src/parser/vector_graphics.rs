@@ -20,19 +20,23 @@ pub struct GraphicsLine {
     pub y0: f32,
     pub x1: f32,
     pub y1: f32,
-    /// Drawn as a line: stroked, or the outline of a filled shape thin enough to be a
-    /// rule. `false` for the outline of a filled area — a chart bar, a shaded band —
-    /// which can complete a ruled grid but is no ruling of its own.
+    /// Drawn as a line: stroked with a pen no wider than a rule, or the outline of a filled
+    /// shape thin enough to be one. `false` for the outline of a filled area — a chart bar,
+    /// a shaded band — or a stroke as wide as a bar, which can complete a ruled grid but is
+    /// no ruling of its own.
     pub ruled: bool,
 }
 
-/// How thick a filled shape may be and still be a rule. Generators that draw table rules
-/// as filled rectangles (word processors, LaTeX) make them a point or two thick.
+/// How thick a filled shape, or a stroke's pen, may be and still be a rule. Generators that
+/// draw table rules as filled rectangles (word processors, LaTeX) make them a point or two
+/// thick.
 const MAX_FILLED_RULE_THICKNESS: f32 = 3.0;
 
 /// Extract every straight line segment painted by a content stream, in device-space
 /// coordinates, each marked [`GraphicsLine::ruled`] when it is drawn as a line — a
-/// stroked path, or the outline of a filled shape thin enough to be a rule.
+/// stroked path whose pen is no wider than [`MAX_FILLED_RULE_THICKNESS`] on the page (a
+/// wider stroke is a bar drawn with a pen: a chart's bars set in a table's cells), or the
+/// outline of a filled shape thin enough to be a rule.
 ///
 /// The outline of a filled area is still returned: row shading and a frame painted as
 /// one filled ring complete a table's grid. But it is no rule of its own — the bars of a
@@ -66,6 +70,10 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
 
     let mut ctm: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut ctm_stack: Vec<[f32; 6]> = Vec::new();
+    // The line width in force (`w`, user space; 1.0 by default), saved and restored with the
+    // graphics state. A stroke wider than a rule is a bar drawn with a pen, not a rule.
+    let mut line_width: f32 = 1.0;
+    let mut width_stack: Vec<f32> = Vec::new();
 
     // Path construction state. Not part of the graphics state stack (q/Q do
     // not save/restore it) — points are transformed through `ctm` as they are
@@ -82,6 +90,7 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
             "q" => {
                 ctm_stack.push(ctm);
                 fill_stack.push(fill.clone());
+                width_stack.push(line_width);
             }
             "Q" => {
                 if let Some(saved) = ctm_stack.pop() {
@@ -90,7 +99,11 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
                 if let Some(saved) = fill_stack.pop() {
                     fill = saved;
                 }
+                if let Some(saved) = width_stack.pop() {
+                    line_width = saved;
+                }
             }
+            "w" if !op.operands.is_empty() => line_width = num(&op.operands[0]).abs(),
             "g" | "rg" | "k" | "sc" | "scn" => fill = colour_of(&op.operands),
             "cs" => fill = None,
             "cm" if op.operands.len() >= 6 => {
@@ -170,11 +183,15 @@ pub fn extract_lines(ops: &[ContentOp], visible: PageBox) -> Vec<GraphicsLine> {
                 subpath_start = Some(p0);
             }
             "S" | "s" | "B" | "B*" | "b" | "b*" => {
+                // The pen's width on the page: the line width scaled by the CTM.
+                let ruled = line_width * (ctm[0] * ctm[3] - ctm[1] * ctm[2]).abs().sqrt()
+                    <= MAX_FILLED_RULE_THICKNESS;
                 lines.extend(
                     pending
                         .drain(..)
                         .flatten()
-                        .filter(|line| shows(&clip, line)),
+                        .filter(|line| shows(&clip, line))
+                        .map(|line| GraphicsLine { ruled, ..line }),
                 );
                 current = None;
                 subpath_start = None;
@@ -410,6 +427,30 @@ mod tests {
                 ruled: true,
             }]
         );
+    }
+
+    /// A stroke whose pen is wider than a rule -- a chart's bar drawn as one line -- is no rule;
+    /// the width is the page's, scaled by the CTM, and saved and restored with the state.
+    #[test]
+    fn a_stroke_as_wide_as_a_bar_is_no_rule() {
+        let stroke = |width: f32, scale: f32| {
+            vec![
+                op("q", &[]),
+                op("cm", &[scale, 0.0, 0.0, scale, 0.0, 0.0]),
+                op("w", &[width]),
+                op("m", &[100.0, 400.0]),
+                op("l", &[200.0, 400.0]),
+                op("S", &[]),
+                op("Q", &[]),
+                op("m", &[100.0, 600.0]),
+                op("l", &[200.0, 600.0]),
+                op("S", &[]),
+            ]
+        };
+        let ruled = |ops: &[ContentOp]| lines_of(ops).iter().map(|l| l.ruled).collect::<Vec<_>>();
+        assert_eq!(ruled(&stroke(5.0, 1.0)), vec![false, true]);
+        assert_eq!(ruled(&stroke(0.5, 1.0)), vec![true, true]);
+        assert_eq!(ruled(&stroke(2.0, 2.0)), vec![false, true]);
     }
 
     /// A rule drawn as a thin filled rectangle, as word processors and LaTeX draw them.

@@ -118,6 +118,30 @@ fn grid_from_component(component: &[AxisSegment], config: &LatticeConfig) -> Opt
     // A table ruled only between its cells, with no frame, ends where its rules do.
     let open_rows = open_sides(component, Axis::Vertical, &row_positions, config);
     let open_columns = open_sides(component, Axis::Horizontal, &col_positions, config);
+    // Each axis needs two boundaries the rules draw: its own rules, and where the rules across it
+    // end -- an open side, or a filled edge there (a shaded header band as wide as the rules). A
+    // table of two columns ruled only between them -- one column rule, the rules between its rows
+    // running past it to the table's sides -- has one rule of its own and two such ends. A bar's
+    // edge is no end: a chart's gridlines run on past its bars. One rule each way is a cross, not
+    // a table: one axis must be ruled twice.
+    let ruled_ends = |positions: &[f32], own: &[f32], open: &[f32], across: Axis| {
+        let ends = joined_edges(component, across, true, config.cluster_tolerance);
+        let near = |a: f32, b: f32| (a - b).abs() <= config.cluster_tolerance;
+        own.len()
+            + open.len()
+            + positions
+                .iter()
+                .filter(|&&p| !own.iter().chain(open).any(|&q| near(p, q)))
+                .filter(|&&p| ends.iter().any(|r| near(r.lo, p) || near(r.hi, p)))
+                .count()
+    };
+    // `y_rules` are the horizontal rules, between rows; `x_rules` the vertical ones.
+    if ruled_ends(&row_positions, &y_rules, &open_rows, Axis::Vertical) < 2
+        || ruled_ends(&col_positions, &x_rules, &open_columns, Axis::Horizontal) < 2
+        || y_rules.len().max(x_rules.len()) < 2
+    {
+        return None;
+    }
     row_positions.extend(open_rows.iter().copied());
     col_positions.extend(open_columns.iter().copied());
     // Descending: PDF y increases upward, and reading order is top (high y) to bottom.
@@ -197,15 +221,17 @@ const FILL_SNAP: f32 = 8.0;
 /// same boundary drawn twice: shading inset from the rules around a cell, taken as
 /// boundaries of its own, gave every column an empty neighbour on each side.
 ///
-/// An axis needs at least two ruled boundaries. Filled areas complete a ruled grid, but
-/// boundaries from filled areas alone are a figure — the bars of a bar chart between its
-/// stroked gridlines.
+/// An axis needs a ruled boundary (and, with its open sides, two -- see `grid_from_component`).
+/// Filled areas complete a ruled grid, but boundaries from filled areas alone are a figure — the
+/// bars of a bar chart between its stroked gridlines.
 ///
-/// And a filled edge is a boundary only where it reaches a rule of the other axis
-/// (`across`): one unbroken stretch (pieces at most [`FILL_GAP`] apart) that meets or crosses
-/// one. A shaded row does, cell by cell; a highlight drawn behind one line of a cell's text
-/// stops short of the rules around the cell, and taking each such edge as a row boundary
-/// split a three-line header cell into three rows.
+/// And a filled edge is a boundary only where it spans a cell of the other axis's rules
+/// (`across`): one unbroken stretch (pieces at most [`FILL_GAP`] apart) that crosses one, or
+/// meets one at each end. A shaded row does, cell by cell; a highlight drawn behind one line
+/// of a cell's text stops short of the rules around the cell, and taking each such edge as a
+/// row boundary split a three-line header cell into three rows. A bar of a chart set in a
+/// table's cells starts at its cell's rule and ends at its value, and as a row boundary split
+/// every row of the table in two.
 fn boundaries(
     component: &[AxisSegment],
     axis: Axis,
@@ -217,7 +243,7 @@ fn boundaries(
         on_axis().filter(|s| s.ruled).map(|s| s.pos),
         config.cluster_tolerance,
     );
-    if positions.len() < 2 {
+    if positions.is_empty() {
         return None;
     }
     let filled = cluster_positions(
@@ -242,11 +268,15 @@ fn boundaries(
         // Only rows need it: a column's filled edge is the side of a shaded row, broken
         // wherever the next row is not shaded, and a highlight's sides fall within
         // [`FILL_SNAP`] of the cell's rules already.
+        // A stretch crosses a rule, or meets one at each end: a bar set in a cell starts at the
+        // cell's rule and stops short of the next, and bounds no row.
+        let meets = |end: f32| across.iter().any(|&r| (r - end).abs() <= FILL_TOUCH);
         axis == Axis::Vertical
             || stretches.iter().any(|&(lo, hi)| {
                 across
                     .iter()
-                    .any(|&r| r >= lo - FILL_TOUCH && r <= hi + FILL_TOUCH)
+                    .any(|&r| r > lo + FILL_TOUCH && r < hi - FILL_TOUCH)
+                    || (meets(lo) && meets(hi))
             })
     };
     positions.extend(
@@ -1659,6 +1689,43 @@ mod tests {
         assert_eq!(grids.len(), 1);
         assert_eq!(grids[0].row_bounds, vec![300.0, 260.0, 210.0]);
         assert_eq!(grids[0].col_bounds, vec![20.0, 120.0, 270.0, 420.0]);
+    }
+
+    /// Two columns ruled only between them: one column rule, the rules between the rows running
+    /// past it on both sides. The rule and the rules' ends bound the two columns.
+    #[test]
+    fn two_columns_ruled_only_between_them_are_a_grid() {
+        let lines = vec![
+            h(300.0, 20.0, 420.0),
+            h(280.0, 20.0, 420.0),
+            h(240.0, 20.0, 420.0),
+            h(200.0, 20.0, 420.0),
+            v(120.0, 200.0, 300.0),
+        ];
+        let grids = infer_grids(&lines, &LatticeConfig::default());
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].col_bounds, vec![20.0, 120.0, 420.0]);
+        assert_eq!(grids[0].row_count(), 3);
+    }
+
+    /// One rule each way, crossing -- a column rule and a rule across it -- is no table.
+    #[test]
+    fn one_rule_each_way_is_no_grid() {
+        let lines = vec![h(250.0, 20.0, 420.0), v(120.0, 100.0, 400.0)];
+        assert!(infer_grids(&lines, &LatticeConfig::default()).is_empty());
+    }
+
+    /// A column rule the rules between the rows do not run past on one side leaves one column:
+    /// the rule alone does not make two.
+    #[test]
+    fn one_column_rule_at_the_rules_end_is_no_second_column() {
+        let lines = vec![
+            h(300.0, 20.0, 120.0),
+            h(250.0, 20.0, 120.0),
+            h(200.0, 20.0, 120.0),
+            v(120.0, 200.0, 300.0),
+        ];
+        assert!(infer_grids(&lines, &LatticeConfig::default()).is_empty());
     }
 
     /// The same open table with its rules drawn cell by cell: the rule under the header is a

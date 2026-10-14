@@ -47,6 +47,18 @@
   only places text just outside every cell. With columns found correctly, an article set in
   columns inside a frame -- running text filling every column on every line -- is kept from being
   read as one record per line: lines that read as prose, column by column, are not records.
+- **A table of two columns ruled only between them is read as a table.** Ruling-line detection
+  needed two rules down a table, so a table drawn with one rule between a narrow label column and
+  a wide column of lists -- and rules between its rows running out to its sides, no frame -- came
+  out as prose: the labels in one run, the lists in another, which list belonged to which label
+  lost. Where the rules between the rows end bounds the table as a frame would, as it already did
+  for tables of more columns; one rule each way, crossing, is still no table.
+- **A bar drawn with a wide pen is no table rule.** A chart's bars set in a table's cells, each a
+  single stroke a few points wide, were taken for rules between rows: every row was split in two
+  and the values beside the bars were scattered. A stroke wider than a rule (3 points on the page,
+  the same limit as for a rule drawn as a filled rectangle) is now a filled area, and an area's
+  edge bounds a row only when it spans a cell -- a bar starts at its cell's rule and stops at its
+  value.
 
 ### Documentation
 
