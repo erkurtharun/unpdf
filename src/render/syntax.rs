@@ -206,14 +206,14 @@ pub(super) fn render_table(table: &Table, options: &RenderOptions) -> String {
     if table.has_merged_cells() && options.table_fallback == TableFallback::Html {
         render_table_html(table)
     } else {
-        render_table_markdown(table)
+        render_table_markdown(table, options)
     }
 }
 
 /// A table as Markdown. Markdown has no merged cells: a merged cell's text is in the position
 /// it starts at and the positions it covers are empty, as in [`Table::to_csv`], so every row
 /// is as wide as the table and each value stays under its heading.
-fn render_table_markdown(table: &Table) -> String {
+fn render_table_markdown(table: &Table, options: &RenderOptions) -> String {
     let width = table.column_count();
     if width == 0 {
         return String::new();
@@ -230,7 +230,15 @@ fn render_table_markdown(table: &Table) -> String {
         output.push('|');
         for slot in &slots {
             let content = slot.map_or(String::new(), |cell| cell.plain_text().replace('\n', " "));
-            output.push_str(&format!(" {} |", content.trim()));
+            // A cell's text is the document's: a `|` in it would end the cell, a `*` start
+            // emphasis. Escaped like a paragraph's (`escape_special_chars`), `|` included.
+            let content = content.trim();
+            let content = if options.escape_special_chars {
+                escape_cell(content)
+            } else {
+                content.to_string()
+            };
+            output.push_str(&format!(" {content} |"));
         }
         output.push('\n');
 
@@ -288,7 +296,9 @@ fn render_html_row(output: &mut String, row: &TableRow, is_header: bool) {
             attrs.push_str(&format!(" colspan=\"{}\"", cell.colspan));
         }
 
-        let content = cell.plain_text();
+        // HTML, whatever `escape_special_chars` says: a `<` or `&` in a cell's text is markup
+        // to the reader of an HTML table, and the text is not.
+        let content = escape_html(&cell.plain_text());
         output.push_str(&format!("<{}{}>", tag, attrs));
         output.push_str(&content);
         output.push_str(&format!("</{}>", tag));
@@ -297,7 +307,44 @@ fn render_html_row(output: &mut String, row: &TableRow, is_header: bool) {
     output.push_str("</tr>\n");
 }
 
-/// Escape the characters that would otherwise be read as Markdown syntax.
+/// A cell's text in a Markdown table, escaped like a paragraph's -- except `*` and `_`. A cell
+/// is a whole inline context, so they are escaped only when some of them could pair into
+/// emphasis ([`markdown::emphasis_can_pair`]): the significance stars of `0.039***` are read as
+/// stars as they are, while `x*y*z` would lose its stars to an italic `y`.
+fn escape_cell(text: &str) -> String {
+    let star = markdown::emphasis_can_pair(text, '*');
+    let underscore = markdown::emphasis_can_pair(text, '_');
+    // Brackets make a link only as `[text](url)` or `[text][label]`: a shortcut reference
+    // `[text]` needs a definition, and the renderer writes none (a paragraph's `[` is always
+    // escaped). So `1 [Reference]` stays as it is.
+    let link = text.contains("](") || text.contains("][");
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        let escape = match c {
+            '\\' | '`' | '|' => true,
+            '[' | ']' => link,
+            '*' => star,
+            '_' => underscore,
+            _ => false,
+        };
+        if escape {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    markdown::escape_html_syntax(&out)
+}
+
+/// A cell's text in an HTML table: `&`, `<` and `>` as character references.
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Escape the characters that would otherwise be read as Markdown syntax -- and, through
+/// [`markdown::escape_html_syntax`], what would be read as inline HTML or a character
+/// reference.
 pub(super) fn escape_markdown(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     for c in text.chars() {
@@ -314,7 +361,7 @@ pub(super) fn escape_markdown(text: &str) -> String {
             _ => result.push(c),
         }
     }
-    result
+    markdown::escape_html_syntax(&result)
 }
 
 #[cfg(test)]
@@ -449,6 +496,56 @@ mod tests {
         // These are only special in a position the renderer controls, and escaping them
         // mid-sentence would put backslashes into ordinary prose.
         assert_eq!(escape_markdown("1. 2 - 3 # 4 > 5"), "1. 2 - 3 # 4 > 5");
+    }
+
+    /// A cell's text is escaped like a paragraph's, its `|` included, so it stays one cell; in
+    /// an HTML table, `<` and `&` are character references whatever escaping says. Text that a
+    /// Markdown reader would take for HTML is escaped in a paragraph too.
+    #[test]
+    fn table_cells_and_html_like_text_stay_text() {
+        let mut table = Table::new();
+        table.add_row(TableRow::header(vec![
+            TableCell::text("a | b".to_string()),
+            TableCell::text("x*y*z".to_string()),
+        ]));
+        table.add_row(TableRow::new(vec![
+            TableCell::text("Vec<String>".to_string()),
+            TableCell::text("AT&amp;T".to_string()),
+        ]));
+        let md = render_table(&table, &RenderOptions::default());
+        assert!(md.contains(r"| a \| b | x\*y\*z |"), "{md}");
+        assert!(md.contains(r"| Vec\<String> | AT\&amp;T |"), "{md}");
+        let mut stars = Table::new();
+        stars.add_row(TableRow::new(vec![
+            TableCell::text("0.039***".to_string()),
+            TableCell::text("*8 ml".to_string()),
+            TableCell::text("1 [Reference]".to_string()),
+            TableCell::text("[x](y)".to_string()),
+        ]));
+        let stars_md = render_table(&stars, &RenderOptions::default());
+        assert!(
+            stars_md.contains(r"| 0.039*** | *8 ml | 1 [Reference] | \[x\](y) |"),
+            "{stars_md}"
+        );
+
+        let mut merged = table.clone();
+        merged.rows[1].cells[0].colspan = 2;
+        merged.rows[1].cells.truncate(1);
+        let html = render_table(
+            &merged,
+            &RenderOptions::default().with_table_fallback(TableFallback::Html),
+        );
+        assert!(
+            html.contains("<td colspan=\"2\">Vec&lt;String&gt;</td>"),
+            "{html}"
+        );
+        assert!(html.contains(">a | b</t"), "{html}");
+
+        let options = RenderOptions::default();
+        assert_eq!(
+            paragraph_markdown(&Paragraph::with_text("a <b>bold</b>"), &options),
+            "a \\<b>bold\\</b>\n\n"
+        );
     }
 
     /// ... and at the start of a paragraph's line the renderer does not put a marker there:

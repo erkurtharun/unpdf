@@ -55,6 +55,15 @@
   only places text just outside every cell. With columns found correctly, an article set in
   columns inside a frame -- running text filling every column on every line -- is kept from being
   read as one record per line: lines that read as prose, column by column, are not records.
+- **A table cell's text is escaped.** A Markdown table wrote each cell's text as it was, so a
+  `|` in a cell ended the cell and shifted every value after it a column to the right, and a
+  `*` or `_` started emphasis. Cells are now escaped like paragraphs (`escape_special_chars`),
+  `|` included. In an HTML table (`TableFallback::Html`) a cell's `&`, `<` and `>` were written
+  as markup; they are now character references.
+- **Text that a Markdown reader would take for HTML stays text.** With `escape_special_chars`
+  on, a `<` that can open a tag or an autolink (`Vec<String>`, `<b>`) and a `&` that starts a
+  character reference (`AT&amp;T`) are escaped, in paragraphs and table cells alike; written
+  bare, `Vec<String>` showed as `Vec` and `<b>` turned the rest of the line bold.
 - **A paragraph whose text starts like a list item, a heading or a quote stays a paragraph.**
   With `escape_special_chars` on (the default), a paragraph the layout did not take for a list
   or a heading but whose text begins `1. `, `* `, `- `, `# ` or `> ` -- a date such as
