@@ -252,8 +252,6 @@ pub enum TableFallback {
     /// An HTML table with `rowspan` and `colspan` for a table with merged cells; a table
     /// without them stays a Markdown table.
     Html,
-    /// Use ASCII art tables
-    Ascii,
 }
 
 /// Page selection for rendering.

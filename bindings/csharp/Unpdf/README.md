@@ -57,7 +57,7 @@ var markdown = doc.ToMarkdown(new MarkdownOptions
 
 Every `MarkdownOptions` property reaches the native library and defaults to the library's own
 value: `IncludeFrontmatter`, `EscapeSpecialChars` (on), `PageMarkers`, `Refine`,
-`ImagePathPrefix`, `TableFallback` (`Markdown` · `Html` · `Ascii`), `MaxHeadingLevel` (1-6,
+`ImagePathPrefix`, `TableFallback` (`Markdown` · `Html`), `MaxHeadingLevel` (1-6,
 default 6), `PreserveLineBreaks`, `ListMarker` (default `'-'`), `Cleanup` (a `CleanupPreset`, or
 `null` for none), `LineWidth` (0 = no wrapping) and `Pages`. A value the library cannot honour
 throws `UnpdfException` with `UnpdfErrorKind.InvalidArgument`; a page the document does not have,

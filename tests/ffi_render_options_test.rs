@@ -257,6 +257,17 @@ fn an_unknown_key_is_rejected() {
     }
 }
 
+/// A table fallback the renderer does not draw is refused rather than rendered as another:
+/// `"ascii"` was once accepted and produced the Markdown table.
+#[test]
+fn a_table_fallback_the_renderer_does_not_draw_is_rejected() {
+    unsafe {
+        let message = rejection(r#"{"table_fallback":"ascii"}"#);
+        assert!(message.contains("ascii"), "{message}");
+        assert!(!render(&text_pdf(), Some(r#"{"table_fallback":"html"}"#)).is_empty());
+    }
+}
+
 /// `"refine": false` asks for nothing, so it is accepted in every build.
 #[test]
 fn refine_false_is_accepted_in_every_build() {

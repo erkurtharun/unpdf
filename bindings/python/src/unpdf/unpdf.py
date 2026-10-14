@@ -136,7 +136,7 @@ ParseOptions = "dict[str, Any]"
 #: Rendering options accepted by :func:`to_markdown`, passed straight through to the
 #: native library as JSON. Every key is optional; an absent key keeps unpdf's own
 #: default. Known keys: ``image_path_prefix`` (str), ``table_fallback``
-#: (``"markdown"`` | ``"html"`` | ``"ascii"``), ``max_heading_level`` (int, 1-6),
+#: (``"markdown"`` | ``"html"``), ``max_heading_level`` (int, 1-6),
 #: ``include_frontmatter`` (bool), ``preserve_line_breaks`` (bool), ``list_marker``
 #: (one-character str), ``escape_special_chars`` (bool — on by default),
 #: ``cleanup_preset`` (``"none"`` | ``"minimal"`` | ``"standard"`` — the default — |

@@ -176,7 +176,7 @@ char* unpdf_to_markdown(const UnpdfDocument* doc, uint32_t flags);
  * way to pass the AI refine pass its credentials. `options_json` is NULL (the defaults)
  * or a JSON object whose fields are all optional:
  *
- *   { "image_path_prefix": string, "table_fallback": "markdown" | "html" | "ascii",
+ *   { "image_path_prefix": string, "table_fallback": "markdown" | "html",
  *     "max_heading_level": number, "include_frontmatter": bool,
  *     "preserve_line_breaks": bool, "list_marker": string (one character),
  *     "escape_special_chars": bool,

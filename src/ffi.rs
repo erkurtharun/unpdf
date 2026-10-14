@@ -198,7 +198,7 @@ fn missing_feature(field: &str, feature: &str) -> String {
 /// ```json
 /// {
 ///   "image_path_prefix": string,
-///   "table_fallback": "markdown" | "html" | "ascii",
+///   "table_fallback": "markdown" | "html",
 ///   "max_heading_level": number,
 ///   "include_frontmatter": bool,
 ///   "preserve_line_breaks": bool,
@@ -254,7 +254,6 @@ struct FfiRenderOptions {
 enum FfiTableFallback {
     Markdown,
     Html,
-    Ascii,
 }
 
 #[derive(serde::Deserialize)]
@@ -295,7 +294,6 @@ impl TryFrom<FfiRenderOptions> for RenderOptions {
             options.table_fallback = match fallback {
                 FfiTableFallback::Markdown => crate::TableFallback::Markdown,
                 FfiTableFallback::Html => crate::TableFallback::Html,
-                FfiTableFallback::Ascii => crate::TableFallback::Ascii,
             };
         }
         if let Some(level) = ffi.max_heading_level {

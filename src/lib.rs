@@ -568,7 +568,7 @@ mod tests {
             .lenient()
             .with_frontmatter()
             .with_cleanup(CleanupPreset::Aggressive)
-            .with_table_fallback(TableFallback::Ascii)
+            .with_table_fallback(TableFallback::Html)
             .sequential();
 
         assert!(matches!(

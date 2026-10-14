@@ -25,9 +25,6 @@ public enum TableFallback
     /// without them stays a Markdown table.
     /// </summary>
     Html,
-
-    /// <summary>A table drawn in ASCII characters.</summary>
-    Ascii,
 }
 
 /// <summary>
@@ -136,7 +133,6 @@ public class MarkdownOptions
             {
                 TableFallback.Markdown => "markdown",
                 TableFallback.Html => "html",
-                TableFallback.Ascii => "ascii",
                 _ => throw new ArgumentOutOfRangeException(nameof(TableFallback)),
             },
             MaxHeadingLevel = MaxHeadingLevel,

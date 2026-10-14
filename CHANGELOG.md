@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Removed
+
+- **`TableFallback::Ascii` is gone** (Rust `TableFallback::Ascii`, CLI `--table-mode ascii`, C and
+  Python `"table_fallback": "ascii"`, .NET `TableFallback.Ascii`). It was offered on every surface
+  but no renderer drew it: a table rendered with it came out as the Markdown table, byte for byte.
+  Use `Markdown` (the default) or `Html`; the C, Python and .NET option payloads now refuse
+  `"ascii"` with an invalid-argument error instead of ignoring it.
+
 ### Fixed
 
 - **A superscript or subscript in lines set across the page stays on its line.** Lines that run

@@ -406,8 +406,6 @@ enum TableMode {
     Markdown,
     /// HTML tables for complex layouts
     Html,
-    /// ASCII art tables
-    Ascii,
 }
 
 impl From<TableMode> for unpdf::TableFallback {
@@ -415,7 +413,6 @@ impl From<TableMode> for unpdf::TableFallback {
         match mode {
             TableMode::Markdown => unpdf::TableFallback::Markdown,
             TableMode::Html => unpdf::TableFallback::Html,
-            TableMode::Ascii => unpdf::TableFallback::Ascii,
         }
     }
 }

@@ -284,7 +284,7 @@ unpdf markdown document.pdf --page-markers -o output.md
 |--------|-------------|---------|
 | `-o, --output` | Output file path | stdout |
 | `-f, --frontmatter` | Include YAML frontmatter | false |
-| `--table-mode` | Table rendering: `markdown`, `html`, `ascii` | markdown |
+| `--table-mode` | Table rendering: `markdown`, `html` | markdown |
 | `--cleanup` | Text cleanup: `minimal`, `standard`, `aggressive` | none |
 | `--refine` | Apply the markdown shape-refinement pass | false |
 | `--max-heading` | Maximum heading level (1-6) | 6 |
@@ -1194,7 +1194,7 @@ Structured Markdown with preserved formatting:
 - **Headings**: Document headings (detected from font size/style) -> `#`, `##`, `###`
 - **Paragraphs**: Text blocks with proper spacing
 - **Lists**: Detected ordered and unordered lists
-- **Tables**: Markdown tables (with HTML/ASCII fallback for complex layouts)
+- **Tables**: Markdown tables (with an HTML fallback for merged cells)
 - **Inline styles**: Bold (`**`), italic (`*`)
 - **Hyperlinks**: Preserved as Markdown links
 - **Images**: Reference-style image links
