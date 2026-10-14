@@ -55,6 +55,12 @@
   only places text just outside every cell. With columns found correctly, an article set in
   columns inside a frame -- running text filling every column on every line -- is kept from being
   read as one record per line: lines that read as prose, column by column, are not records.
+- **A title of two lines over columns is read as itself, and stacked column systems split
+  where the gutter moves.** When a region's columns end or begin at a band of text set across
+  them, the cut was chosen to leave the larger columns part, with at least three lines on the
+  band's side — so a two-line title took the columns' first rows with it, and a line inside one
+  column could be cut off as a "band". A band now has to cross the columns' gutter (or be a
+  column system of its own with a different gutter), and may be two lines.
 - **A table cell's text is escaped.** A Markdown table wrote each cell's text as it was, so a
   `|` in a cell ended the cell and shifted every value after it a column to the right, and a
   `*` or `_` started emphasis. Cells are now escaped like paragraphs (`escape_special_chars`),

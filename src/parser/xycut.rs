@@ -552,6 +552,9 @@ fn narrow_blocks(blocks: &[Block], range: f32, join_gap: f32) -> Vec<Block> {
         .collect()
 }
 
+/// The fewest lines a band cut off by [`column_band`] has.
+const BAND_MIN_LINES: usize = 2;
+
 /// The height to cut a region at so that one part reads as two columns of text, when the
 /// region as a whole does not: the columns end (or begin) at a band set across them — a
 /// run of footnotes, a full-width table — that leaves no whitespace channel through the
@@ -561,22 +564,36 @@ fn narrow_blocks(blocks: &[Block], range: f32, join_gap: f32) -> Vec<Block> {
 /// [`spanning_band`] covers the single line set across the columns; this covers the band of
 /// several, whose lines need not even reach across both columns on their own — a
 /// footnote's continuation line can be no wider than a column and still close the gutter.
+///
+/// What the other part is decides whether the cut is a boundary at all. A band is set
+/// *across* the columns: some line of it crosses their gutter — a title over two columns, a
+/// footnote rule's first note. A last line that stands inside one column is the column's
+/// own, and cutting it off left the column part one line larger than the true boundary's,
+/// so it won. And where the other part reads as columns too, the region is two column
+/// systems stacked, and the boundary between them is where the gutter moves: a cut whose
+/// two parts share a gutter is inside one system. The band can be two lines — a two-line
+/// title over the columns is cut off as itself, not with the columns' first rows.
 fn column_band(blocks: &[Block], config: &XyCutConfig) -> Option<f32> {
     let centre = |b: &Block| b.y - b.height / 2.0;
     let mut lines = lines_of(blocks, config.min_gutter);
-    if lines.len() < 2 * GUTTER_MIN_SIDE_BLOCKS + 1 {
+    if lines.len() < GUTTER_MIN_SIDE_BLOCKS + BAND_MIN_LINES {
         return None;
     }
     lines.sort_by(|a, b| centre(&b.extent).total_cmp(&centre(&a.extent)));
-    let columns = |part: &[Line]| -> bool {
+    let gutter = |part: &[Line]| -> Option<f32> {
         let members: Vec<Block> = part
             .iter()
             .flat_map(|line| line.members.iter().map(|&i| blocks[i]))
             .collect();
-        text_column_gutter(&members, config.min_gutter).is_some()
+        text_column_gutter(&members, config.min_gutter)
+    };
+    let crosses = |part: &[Line], at: f32| {
+        part.iter()
+            .any(|line| line.extent.x < at && line.extent.right() > at)
     };
     let mut best: Option<(usize, f32)> = None;
-    for cut in GUTTER_MIN_SIDE_BLOCKS..=lines.len() - GUTTER_MIN_SIDE_BLOCKS {
+    // One line set across the columns is `spanning_band`'s, under its own stricter test.
+    for cut in BAND_MIN_LINES..=lines.len() - BAND_MIN_LINES {
         let (above, below) = lines.split_at(cut);
         let (last_above, first_below) = (&above[above.len() - 1].extent, &below[0].extent);
         // Never between two lines that overlap: that would cut through text.
@@ -584,11 +601,20 @@ fn column_band(blocks: &[Block], config: &XyCutConfig) -> Option<f32> {
             continue;
         }
         let at = (centre(last_above) + centre(first_below)) / 2.0;
-        for part in [above, below] {
-            if best.is_some_and(|(size, _)| size >= part.len()) {
+        for (part, other) in [(above, below), (below, above)] {
+            if part.len() < GUTTER_MIN_SIDE_BLOCKS
+                || best.is_some_and(|(size, _)| size >= part.len())
+            {
                 continue;
             }
-            if columns(part) {
+            let Some(g) = gutter(part) else {
+                continue;
+            };
+            let boundary = match gutter(other) {
+                None => crosses(other, g),
+                Some(h) => (h - g).abs() >= config.min_gutter,
+            };
+            if boundary {
                 best = Some((part.len(), at));
             }
         }

@@ -690,3 +690,56 @@ fn a_heading_at_a_columns_edge_near_the_regions_centre_stays_with_its_column() {
     let seg = xycut_partition(&blocks, &config);
     assert_ne!(seg.groups.first(), Some(&vec![0]), "{:?}", seg.groups);
 }
+
+/// Two column systems stacked with no whitespace band between them -- an article's three
+/// narrow flows over a two-column body, say: the boundary is where the gutter moves, and each
+/// system's columns read one after the other before the next system's.
+#[test]
+fn stacked_column_systems_split_where_the_gutter_moves() {
+    let mut blocks = Vec::new();
+    for i in 0..6 {
+        let y = 700.0 - i as f32 * 13.0;
+        blocks.push(make_block(72.0, y, 170.0, 11.0));
+        blocks.push(make_block(256.0, y, 170.0, 11.0));
+    }
+    for i in 0..6 {
+        let y = 620.0 - i as f32 * 13.0;
+        blocks.push(make_block(72.0, y, 220.0, 11.0));
+        blocks.push(make_block(306.0, y, 220.0, 11.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_11PT);
+    let order: Vec<(f32, f32)> = groups.iter().map(|g| (g[0].x, g[0].y)).collect();
+    assert_eq!(
+        order,
+        vec![(72.0, 700.0), (256.0, 700.0), (72.0, 620.0), (306.0, 620.0)],
+        "{groups:?}"
+    );
+}
+
+/// A title of two lines set over two columns, too close above them for a plain cut, with
+/// a drop cap two lines tall opening the left column: the title is banded off as itself,
+/// and the columns' first two rows stay in the columns.
+#[test]
+fn a_two_line_title_over_columns_is_banded_off_without_their_first_rows() {
+    let mut blocks = vec![
+        make_block(110.0, 760.0, 380.0, 20.0),
+        make_block(150.0, 738.0, 300.0, 20.0),
+        // The drop cap: two rows tall, so rows one and two overlap it.
+        make_block(72.0, 714.0, 22.0, 24.0),
+    ];
+    for i in 0..8 {
+        let y = 714.0 - i as f32 * 13.0;
+        let left = if i < 2 { 98.0 } else { 72.0 };
+        blocks.push(make_block(left, y, 292.0 - left, 11.0));
+        blocks.push(make_block(306.0, y, 220.0, 11.0));
+    }
+    let groups = xycut_segment(&blocks, &BODY_11PT);
+    let title = groups
+        .iter()
+        .find(|g| g.iter().any(|b| b.y == 760.0))
+        .expect("the title is read");
+    assert!(
+        title.iter().all(|b| b.y >= 738.0),
+        "the title's group holds no column row: {groups:?}"
+    );
+}
