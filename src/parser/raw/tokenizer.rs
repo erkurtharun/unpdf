@@ -380,19 +380,10 @@ fn parse_literal_string(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
                         // line continuation
                         p += 1;
                     }
-                    c if c.is_ascii_digit() && c <= b'7' => {
-                        // Octal escape \ddd (1-3 digits)
-                        let mut val: u8 = c - b'0';
-                        p += 1;
-                        if p < data.len() && data[p] >= b'0' && data[p] <= b'7' {
-                            val = val * 8 + (data[p] - b'0');
-                            p += 1;
-                            if p < data.len() && data[p] >= b'0' && data[p] <= b'7' {
-                                val = val * 8 + (data[p] - b'0');
-                                p += 1;
-                            }
-                        }
-                        result.push(val);
+                    b'0'..=b'7' => {
+                        let (byte, end) = octal_escape(data, p);
+                        result.push(byte);
+                        p = end;
                     }
                     other => {
                         // Unknown escape – just include the character
@@ -418,6 +409,23 @@ fn parse_literal_string(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
 }
 
 /// Parse a hex string or dictionary based on look-ahead.
+/// The byte an octal escape `\ddd` in a literal string stands for, and where it ends: one to
+/// three octal digits starting at `start` (just past the backslash, on a digit `0`–`7`). A
+/// value past 255 keeps its low byte -- «high-order overflow shall be ignored» (ISO 32000-1
+/// §7.3.4.2) -- so `\777` is 0xFF, not an arithmetic overflow. `8` and `9` are no octal
+/// digits: `\8` is no escape at all, and the caller keeps the `8`.
+pub(crate) fn octal_escape(data: &[u8], start: usize) -> (u8, usize) {
+    let digits = data[start..]
+        .iter()
+        .take(3)
+        .take_while(|b| (b'0'..=b'7').contains(*b))
+        .count();
+    let value = data[start..start + digits]
+        .iter()
+        .fold(0u16, |v, &d| v * 8 + u16::from(d - b'0'));
+    (value as u8, start + digits)
+}
+
 fn parse_hex_or_dict(data: &[u8], pos: usize) -> Result<(PdfObject, usize)> {
     debug_assert_eq!(data[pos], b'<');
     if pos + 1 < data.len() && data[pos + 1] == b'<' {
@@ -673,6 +681,22 @@ mod tests {
     fn test_parse_literal_string_escaped() {
         let (obj, _) = parse_object(b"(Hello\\nWorld) ", 0).unwrap();
         assert_eq!(obj.as_str_bytes(), Some(b"Hello\nWorld".as_slice()));
+    }
+
+    /// `\ddd` past 255 keeps its low byte (ISO 32000-1 §7.3.4.2) -- found by the fuzzer as
+    /// an arithmetic overflow; one or two digits end at the first non-octal character, and
+    /// `\8` is no escape: the backslash is dropped and the `8` kept.
+    #[test]
+    fn test_parse_literal_string_octal_escapes() {
+        for (input, bytes) in [
+            (b"(\\777) ".as_slice(), b"\xff".as_slice()),
+            (b"(\\101\\60x) ", b"A0x"),
+            (b"(\\1234) ", b"S4"),
+            (b"(\\8) ", b"8"),
+        ] {
+            let (obj, _) = parse_object(input, 0).unwrap();
+            assert_eq!(obj.as_str_bytes(), Some(bytes), "{input:?}");
+        }
     }
 
     #[test]

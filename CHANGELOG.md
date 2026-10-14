@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An octal escape past `ÿ` in a string no longer overflows.** A literal string's `\ddd`
+  whose value passes 255 (`ǿ`) overflowed a byte while it was read -- a panic in a build with
+  overflow checks, such as a Rust consumer's debug build. Its low byte is kept, as ISO 32000-1
+  §7.3.4.2 says. And in a content stream, `\8` and `\9` were read as bytes 8 and 9; they are
+  no escapes, so the digit is kept, as the object parser already did. Found by the fuzzer.
+
 ## 0.44.0 — 2026-10-14
 
 ### Removed

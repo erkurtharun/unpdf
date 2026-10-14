@@ -190,19 +190,10 @@ fn parse_literal_string(data: &[u8], start: usize) -> (PdfValue, usize) {
                         result.push(b'\\');
                         i += 1;
                     }
-                    c if c.is_ascii_digit() => {
-                        // Octal escape
-                        let mut octal = (c - b'0') as u16;
-                        i += 1;
-                        for _ in 0..2 {
-                            if i < len && data[i].is_ascii_digit() && data[i] <= b'7' {
-                                octal = octal * 8 + (data[i] - b'0') as u16;
-                                i += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        result.push(octal as u8);
+                    b'0'..=b'7' => {
+                        let (byte, end) = super::tokenizer::octal_escape(data, i);
+                        result.push(byte);
+                        i = end;
                     }
                     b'\r' => {
                         // Backslash + CR (+ optional LF) = line continuation
@@ -468,6 +459,18 @@ mod tests {
         assert_eq!(ops[2].operator, "Td");
         assert_eq!(ops[3].operator, "Tj");
         assert_eq!(ops[4].operator, "ET");
+    }
+
+    /// The content stream reads octal escapes as the object parser does: `\777` keeps its low
+    /// byte, and `\8` is no escape (it read as byte 8).
+    #[test]
+    fn literal_string_octal_escapes_match_the_object_parser() {
+        let ops = parse_content_stream(b"BT (\\777\\8) Tj ET").unwrap();
+        assert!(
+            matches!(&ops[1].operands[0], PdfValue::Str(s) if s == b"\xff8"),
+            "{:?}",
+            ops[1].operands
+        );
     }
 
     #[test]
