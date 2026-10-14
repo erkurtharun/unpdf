@@ -1,11 +1,9 @@
 //! Markdown rendering for PDF documents.
 
 use crate::error::Result;
-use crate::model::{
-    Block, Document, InlineContent, ListInfo, ListStyle, Page, Paragraph, Table, TextRun,
-};
+use crate::model::{Block, Document, Page, Paragraph, Table};
 
-use super::syntax::{escape_markdown, leading_char, render_table};
+use super::syntax::{paragraph_markdown, render_table};
 use super::{CleanupPipeline, ExtractionStats, PageMarkerStyle, RenderOptions, RenderResult};
 use unparser_shared::markdown;
 
@@ -204,103 +202,16 @@ impl MarkdownRenderer {
         if para.is_empty() {
             return;
         }
-
-        // Handle headings
-        if let Some(level) = para.style.heading_level {
-            if self.options.collect_stats {
-                self.stats.add_heading();
-            }
-            let level = level.min(self.options.max_heading_level);
-            let prefix = "#".repeat(level as usize);
-            output.push_str(&prefix);
-            output.push(' ');
-            self.render_inline_content(output, &para.content);
-            output.push_str("\n\n");
-            return;
-        }
-
-        // Handle list items
-        if let Some(ref list_info) = para.style.list_info {
-            if self.options.collect_stats {
-                self.stats.add_list_item();
-            }
-            self.render_list_item(output, para, list_info);
-            return;
-        }
-
-        // Normal paragraph
         if self.options.collect_stats {
-            self.stats.add_paragraph();
-        }
-        self.render_inline_content(output, &para.content);
-        output.push_str("\n\n");
-    }
-
-    fn render_list_item(&self, output: &mut String, para: &Paragraph, list_info: &ListInfo) {
-        let indent = "  ".repeat(list_info.level as usize);
-
-        let marker = match &list_info.style {
-            ListStyle::Unordered { marker: _ } => {
-                format!("{}", self.options.list_marker)
-            }
-            ListStyle::Ordered { number_style, .. } => {
-                let num = list_info.item_number.unwrap_or(1);
-                format!("{}.", number_style.format_number(num))
-            }
-        };
-
-        output.push_str(&indent);
-        output.push_str(&marker);
-        output.push(' ');
-        self.render_inline_content(output, &para.content);
-        output.push('\n');
-    }
-
-    fn render_inline_content(&self, output: &mut String, content: &[InlineContent]) {
-        for (i, item) in content.iter().enumerate() {
-            match item {
-                InlineContent::Text(run) => {
-                    self.render_text_run(output, run, content.get(i + 1).and_then(leading_char));
-                }
-                InlineContent::LineBreak => {
-                    if self.options.preserve_line_breaks {
-                        output.push_str("  \n");
-                    } else {
-                        output.push(' ');
-                    }
-                }
-                InlineContent::Link { text, url, title } => {
-                    let label = if self.options.escape_special_chars {
-                        escape_markdown(text)
-                    } else {
-                        text.clone()
-                    };
-                    output.push_str(&markdown::link(&label, url, title.as_deref(), false));
-                }
-                InlineContent::Image {
-                    resource_id,
-                    alt_text,
-                } => {
-                    let alt = alt_text.as_deref().unwrap_or("");
-                    let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-                    output.push_str(&markdown::image(alt, &path, false));
-                }
+            if para.style.heading_level.is_some() {
+                self.stats.add_heading();
+            } else if para.style.list_info.is_some() {
+                self.stats.add_list_item();
+            } else {
+                self.stats.add_paragraph();
             }
         }
-    }
-
-    /// Append `run`, styled for where it lands: after what `output` already holds, before
-    /// `after`.
-    fn render_text_run(&self, output: &mut String, run: &TextRun, after: Option<char>) {
-        let text = if self.options.escape_special_chars {
-            escape_markdown(&run.text)
-        } else {
-            run.text.clone()
-        };
-
-        let styled =
-            super::syntax::apply_text_style(&text, &run.style, output.chars().next_back(), after);
-        output.push_str(&styled);
+        output.push_str(&paragraph_markdown(para, &self.options));
     }
 
     fn render_table(&self, output: &mut String, table: &Table) {
@@ -318,12 +229,7 @@ impl MarkdownRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_escape_markdown() {
-        assert_eq!(escape_markdown("Hello *world*"), "Hello \\*world\\*");
-        assert_eq!(escape_markdown("[link]"), "\\[link\\]");
-    }
+    use crate::model::InlineContent;
 
     #[test]
     fn test_render_simple_paragraph() {

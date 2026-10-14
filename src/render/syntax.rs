@@ -16,8 +16,10 @@
 //! Table block is already fully materialized by the time either renderer sees it.
 
 use super::{RenderOptions, TableFallback};
-use crate::model::{Alignment, Block, InlineContent, Table, TableCell, TableRow, TextStyle};
-use unparser_shared::markdown::emphasis_span;
+use crate::model::{
+    Alignment, Block, InlineContent, ListStyle, Paragraph, Table, TableCell, TableRow, TextStyle,
+};
+use unparser_shared::markdown::{self, emphasis_span};
 
 /// Whether `block` is a list item.
 fn is_list_item(block: &Block) -> bool {
@@ -95,6 +97,82 @@ pub(super) fn apply_text_style(
     }
 
     format!("{leading}{styled}{trailing}")
+}
+
+/// A paragraph as Markdown with the separator after it: a heading (its `#`s, then a blank
+/// line), a list item (its marker, then one line break) or a paragraph (a blank line). The
+/// whole-document and the streaming renderer write a paragraph through this one function, so
+/// the two cannot drift.
+pub(super) fn paragraph_markdown(para: &Paragraph, options: &RenderOptions) -> String {
+    let mut output = String::new();
+    if let Some(level) = para.style.heading_level {
+        output.push_str(&"#".repeat(level.min(options.max_heading_level) as usize));
+        output.push(' ');
+        push_inline_content(&mut output, &para.content, options);
+        output.push_str("\n\n");
+    } else if let Some(list_info) = &para.style.list_info {
+        output.push_str(&"  ".repeat(list_info.level as usize));
+        match &list_info.style {
+            ListStyle::Unordered { .. } => output.push(options.list_marker),
+            ListStyle::Ordered { number_style, .. } => {
+                let number = list_info.item_number.unwrap_or(1);
+                output.push_str(&number_style.format_number(number));
+                output.push('.');
+            }
+        }
+        output.push(' ');
+        push_inline_content(&mut output, &para.content, options);
+        output.push('\n');
+    } else {
+        push_inline_content(&mut output, &para.content, options);
+        output.push_str("\n\n");
+    }
+    output
+}
+
+/// Append a paragraph's inline content.
+fn push_inline_content(output: &mut String, content: &[InlineContent], options: &RenderOptions) {
+    for (i, item) in content.iter().enumerate() {
+        match item {
+            InlineContent::Text(run) => {
+                let text = if options.escape_special_chars {
+                    escape_markdown(&run.text)
+                } else {
+                    run.text.clone()
+                };
+                let after = content.get(i + 1).and_then(leading_char);
+                output.push_str(&apply_text_style(
+                    &text,
+                    &run.style,
+                    output.chars().next_back(),
+                    after,
+                ));
+            }
+            InlineContent::LineBreak => {
+                if options.preserve_line_breaks {
+                    output.push_str("  \n");
+                } else {
+                    output.push(' ');
+                }
+            }
+            InlineContent::Link { text, url, title } => {
+                let label = if options.escape_special_chars {
+                    escape_markdown(text)
+                } else {
+                    text.clone()
+                };
+                output.push_str(&markdown::link(&label, url, title.as_deref(), false));
+            }
+            InlineContent::Image {
+                resource_id,
+                alt_text,
+            } => {
+                let alt = alt_text.as_deref().unwrap_or("");
+                let path = format!("{}{}", options.image_path_prefix, resource_id);
+                output.push_str(&markdown::image(alt, &path, false));
+            }
+        }
+    }
 }
 
 /// The first character `item` writes — what a styled run just before it lands against.

@@ -33,7 +33,7 @@
 use crate::error::Result;
 use crate::model::{Block, Document, Metadata};
 
-use super::syntax::{escape_markdown, leading_char, render_table};
+use super::syntax::{paragraph_markdown, render_table};
 use super::{PageMarkerStyle, RenderOptions};
 use unparser_shared::markdown;
 
@@ -218,35 +218,8 @@ impl BlockRenderer {
     /// Render a single block to its Markdown fragment.
     pub fn render_block(&self, block: &Block) -> String {
         match block {
-            Block::Paragraph(p) => {
-                if p.is_empty() {
-                    return String::new();
-                }
-
-                let mut output = String::new();
-
-                // Handle headings
-                if let Some(level) = p.style.heading_level {
-                    let level = level.min(self.options.max_heading_level);
-                    let prefix = "#".repeat(level as usize);
-                    output.push_str(&prefix);
-                    output.push(' ');
-                    self.render_inline_content(&mut output, &p.content);
-                    output.push_str("\n\n");
-                    return output;
-                }
-
-                // Handle list items
-                if let Some(ref list_info) = p.style.list_info {
-                    self.render_list_item(&mut output, p, list_info);
-                    return output;
-                }
-
-                // Normal paragraph
-                self.render_inline_content(&mut output, &p.content);
-                output.push_str("\n\n");
-                output
-            }
+            Block::Paragraph(p) if p.is_empty() => String::new(),
+            Block::Paragraph(p) => paragraph_markdown(p, &self.options),
             Block::Table(t) => render_table(t, &self.options),
             Block::Image {
                 resource_id,
@@ -261,83 +234,6 @@ impl BlockRenderer {
             Block::PageBreak | Block::SectionBreak => "\n\n".to_string(),
             Block::Raw { content } => format!("{}\n\n", content),
         }
-    }
-
-    fn render_inline_content(&self, output: &mut String, content: &[crate::model::InlineContent]) {
-        for (i, item) in content.iter().enumerate() {
-            match item {
-                crate::model::InlineContent::Text(run) => {
-                    self.render_text_run(output, run, content.get(i + 1).and_then(leading_char));
-                }
-                crate::model::InlineContent::LineBreak => {
-                    if self.options.preserve_line_breaks {
-                        output.push_str("  \n");
-                    } else {
-                        output.push(' ');
-                    }
-                }
-                crate::model::InlineContent::Link { text, url, title } => {
-                    let label = if self.options.escape_special_chars {
-                        escape_markdown(text)
-                    } else {
-                        text.clone()
-                    };
-                    output.push_str(&markdown::link(&label, url, title.as_deref(), false));
-                }
-                crate::model::InlineContent::Image {
-                    resource_id,
-                    alt_text,
-                } => {
-                    let alt = alt_text.as_deref().unwrap_or("");
-                    let path = format!("{}{}", self.options.image_path_prefix, resource_id);
-                    output.push_str(&markdown::image(alt, &path, false));
-                }
-            }
-        }
-    }
-
-    /// Append `run`, styled for where it lands: after what `output` already holds, before
-    /// `after`.
-    fn render_text_run(
-        &self,
-        output: &mut String,
-        run: &crate::model::TextRun,
-        after: Option<char>,
-    ) {
-        let text = if self.options.escape_special_chars {
-            escape_markdown(&run.text)
-        } else {
-            run.text.clone()
-        };
-
-        let styled =
-            super::syntax::apply_text_style(&text, &run.style, output.chars().next_back(), after);
-        output.push_str(&styled);
-    }
-
-    fn render_list_item(
-        &self,
-        output: &mut String,
-        para: &crate::model::Paragraph,
-        list_info: &crate::model::ListInfo,
-    ) {
-        let indent = "  ".repeat(list_info.level as usize);
-
-        let marker = match &list_info.style {
-            crate::model::ListStyle::Unordered { .. } => {
-                format!("{}", self.options.list_marker)
-            }
-            crate::model::ListStyle::Ordered { number_style, .. } => {
-                let num = list_info.item_number.unwrap_or(1);
-                format!("{}.", number_style.format_number(num))
-            }
-        };
-
-        output.push_str(&indent);
-        output.push_str(&marker);
-        output.push(' ');
-        self.render_inline_content(output, &para.content);
-        output.push('\n');
     }
 }
 
