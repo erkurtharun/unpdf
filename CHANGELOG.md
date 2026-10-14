@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Requires `unparser-shared` 0.11.
+
 ### Fixed
 
 - **An octal escape past `\377` in a string no longer overflows.** A literal string's `\ddd`
