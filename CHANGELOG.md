@@ -9,6 +9,17 @@
   overflow checks, such as a Rust consumer's debug build. Its low byte is kept, as ISO 32000-1
   §7.3.4.2 says. And in a content stream, `\8` and `\9` were read as bytes 8 and 9; they are
   no escapes, so the digit is kept, as the object parser already did. Found by the fuzzer.
+- **A decompression bomb is refused instead of exhausting memory.** A `FlateDecode`, `LZWDecode`
+  or `RunLengthDecode` stream was decoded to its end however far it expanded: a few hundred
+  kilobytes of deflated zeros allocated gigabytes, and the process (the host application, for
+  the bindings) was killed. Past 100 MiB, a filter's output may now be at most 600 times its
+  input (400 for LZW) -- MuPDF's rule -- and no stream passes 1 GiB (PDFium's limit); past them
+  the stream fails with a parse error, also on the partial-recovery path for damaged Flate
+  data. A blank image mask that compresses a thousandfold still decodes under the 100 MiB grace.
+- **A predictor with an out-of-range `/Columns` or `/Colors` no longer overflows or
+  over-allocates.** A negative or huge count overflowed the row length (a panic with overflow
+  checks), and an empty stream with a huge `/Columns` allocated a row buffer of that size. Such
+  data is now returned undecoded, as for an unknown predictor.
 
 ## 0.44.0 — 2026-10-14
 
