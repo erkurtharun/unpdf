@@ -855,7 +855,7 @@ impl Painter<'_> {
     /// stencil mask — the fill color where the stencil marks.
     fn image_pixmap(&self, image: &RawXObject) -> Option<Pixmap> {
         let (w, h) = (image.width?, image.height?);
-        if w == 0 || h == 0 {
+        if w == 0 || h == 0 || !png_encode::decodable(w, h, 4) {
             return None;
         }
         let mut rgba: Vec<u8> = if image.image_mask {
@@ -982,7 +982,15 @@ fn decode_jpeg(data: &[u8], w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
     use zune_jpeg::zune_core::colorspace::ColorSpace;
     use zune_jpeg::zune_core::options::DecoderOptions;
 
-    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
+    // The dictionary's size bounds what the decoder may allocate: a JPEG whose own header says
+    // more is refused before its pixels are, not after.
+    if !png_encode::decodable(w, h, 3) {
+        return None;
+    }
+    let options = DecoderOptions::default()
+        .jpeg_set_out_colorspace(ColorSpace::RGB)
+        .set_max_width(w as usize)
+        .set_max_height(h as usize);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
     let pixels = decoder.decode().ok()?;
     let info = decoder.info()?;

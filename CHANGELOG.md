@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **An image no longer decodes to many times its stream's size.** A sample stream is bounded,
+  but a pixel costs more than a sample -- a 1-bit palette image becomes 24 bits of RGB, and 32
+  of RGBA when a page is rendered -- so an image within the stream limit could still ask for
+  tens of gigabytes. An image wider or taller than 131 071 pixels, or whose decoded pixels
+  would pass 4 GiB, is now not decoded (as PDFium bounds an image), when its resource is
+  converted to PNG and when a page is rendered; a JPEG is not decoded past the size its image
+  dictionary declares.
+
 ### Changed
 
 - Requires `unparser-shared` 0.12: a cell span past HTML's bounds (1000 columns, 65 534

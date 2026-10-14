@@ -12,6 +12,22 @@
 
 use super::backend::ImageColorSpace;
 
+/// The widest or tallest image this decodes, in pixels: PDFium's `kMaxImageDimension`.
+pub(crate) const MAX_IMAGE_DIMENSION: u32 = 0x01_FFFF;
+
+/// Whether an image of `width` × `height` pixels, `channels` bytes each once decoded, is one
+/// this decodes: each side within [`MAX_IMAGE_DIMENSION`], and the decoded buffer within what a
+/// `u32` counts, as PDFium bounds a bitmap's pitch times its height.
+///
+/// The samples are already bounded by the stream they come from, but a pixel costs more than a
+/// sample: a 1-bit palette image becomes 24 bits of RGB, 32 of RGBA when drawn, so the stream
+/// limit alone lets an image ask for 32 times its decoded data.
+pub(crate) fn decodable(width: u32, height: u32, channels: u32) -> bool {
+    width <= MAX_IMAGE_DIMENSION
+        && height <= MAX_IMAGE_DIMENSION
+        && u64::from(width) * u64::from(height) * u64::from(channels) <= u64::from(u32::MAX)
+}
+
 /// Convert an image XObject's decompressed samples to a PNG.
 ///
 /// `data` holds `height` rows of `width` samples of `color.components()` components each,
@@ -44,6 +60,10 @@ pub(crate) fn image_pixels(
     if !matches!(bits_per_component, 1 | 2 | 4 | 8 | 16) || width == 0 || height == 0 {
         return None;
     }
+    let output = color.output();
+    if !decodable(width, height, output.channels()) {
+        return None;
+    }
     let components = color.components();
     let bpc = bits_per_component as usize;
     let samples_per_row = (width as usize).checked_mul(components)?;
@@ -63,7 +83,6 @@ pub(crate) fn image_pixels(
         }
     };
 
-    let output = color.output();
     let mut pixels =
         Vec::with_capacity(width as usize * height as usize * output.channels() as usize);
     let mut values = vec![0f32; components];
@@ -231,6 +250,34 @@ fn write_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_wider_than_the_bound_is_not_decoded() {
+        // One row of 0x20000 one-bit samples: the data is all there, the width is past
+        // PDFium's bound.
+        let width = MAX_IMAGE_DIMENSION + 1;
+        let data = vec![0u8; (width as usize).div_ceil(8)];
+        assert!(image_pixels(width, 1, 1, &ImageColorSpace::Gray, None, &data).is_none());
+        let data = vec![0u8; (MAX_IMAGE_DIMENSION as usize).div_ceil(8)];
+        assert!(image_pixels(
+            MAX_IMAGE_DIMENSION,
+            1,
+            1,
+            &ImageColorSpace::Gray,
+            None,
+            &data
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn a_decoded_buffer_past_what_a_u32_counts_is_refused() {
+        assert!(decodable(1000, 1000, 4));
+        // 65 536 x 16 384 RGBA pixels are exactly 2^32 bytes.
+        assert!(!decodable(65_536, 16_384, 4));
+        assert!(decodable(65_536, 16_383, 4));
+        assert!(!decodable(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION, 1));
+    }
 
     fn decode_with_png_crate(bytes: &[u8]) -> (u32, u32, png::ColorType, Vec<u8>) {
         let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
