@@ -151,23 +151,30 @@ RenderOptions = "dict[str, Any]"
 
 
 def _parse_file(
-    lib: ctypes.CDLL, source: PdfSource, options: "dict[str, Any] | None" = None
+    lib: ctypes.CDLL,
+    source: PdfSource,
+    options: "dict[str, Any] | None" = None,
+    extract: bool = True,
 ) -> ctypes.c_void_p:
     """Parse a PDF and return the document handle. Raises on failure.
 
     Dispatches on the type of ``source``: bytes are parsed in memory, anything
     else is treated as a filesystem path. ``options`` is JSON-encoded and passed
     to the native library; ``None`` (the default) keeps unpdf's own defaults.
+    With ``extract=False`` the document is only opened: its content is extracted
+    the first time something asks for it.
     """
     options_json = json.dumps(options).encode("utf-8") if options is not None else None
+    from_bytes = lib.unpdf_parse_bytes_with_options if extract else lib.unpdf_open_bytes_with_options
+    from_file = lib.unpdf_parse_file_with_options if extract else lib.unpdf_open_file_with_options
 
     if isinstance(source, (bytes, bytearray)):
         if not source:
             raise UnpdfError("unpdf error: empty PDF data", ErrorKind.INVALID_ARGUMENT)
         buf = (ctypes.c_uint8 * len(source)).from_buffer_copy(source)
-        handle = lib.unpdf_parse_bytes_with_options(buf, len(source), options_json)
+        handle = from_bytes(buf, len(source), options_json)
     else:
-        handle = lib.unpdf_parse_file_with_options(_encode_path(source), options_json)
+        handle = from_file(_encode_path(source), options_json)
 
     if not handle:
         raise _native_error(lib)
@@ -653,8 +660,13 @@ def _render(lib: ctypes.CDLL, handle: Any, page_number: int, dpi: float, region:
 
 
 class Document:
-    """A parsed PDF kept open, so its pages can be rendered — and their statistics
-    read — without parsing the file again for every call.
+    """A PDF kept open, so its pages can be counted, rendered — and their statistics
+    read — without reading the file again for every call.
+
+    Opening reads the file's structure, and fails for a file that is not a PDF. The
+    content is extracted the first time something needs it (:meth:`get_page_stats`,
+    :meth:`get_tables`) — so an extraction error is raised there — and counting or
+    rendering pages never needs it.
 
     Use it as a context manager, or call :meth:`close`::
 
@@ -666,7 +678,18 @@ class Document:
 
     def __init__(self, source: PdfSource, options: "dict[str, Any] | None" = None) -> None:
         self._lib = get_library()
-        self._handle: Any = _parse_file(self._lib, source, options)
+        # Set before opening: a failed open raises here, and `__del__` still runs.
+        self._handle: Any = None
+        self._handle = _parse_file(self._lib, source, options, extract=False)
+
+    @property
+    def page_count(self) -> int:
+        """The number of pages in the document's page tree — every page, whatever
+        the ``pages`` option selects. Needs no extraction."""
+        count = self._lib.unpdf_page_count(self._live())
+        if count < 0:
+            raise _native_error(self._lib)
+        return count
 
     def render_page(self, page_number: int, dpi: float = 150.0, region: str = "crop") -> RenderedPage:
         """Render a page (1-indexed) to a PNG — painted from the content this document
@@ -722,8 +745,9 @@ def render_page(
     region: str = "crop",
     options: "dict[str, Any] | None" = None,
 ) -> RenderedPage:
-    """Render one page to a PNG. Parses the document for this call — to render
-    several pages of one document, open it once with :class:`Document`.
+    """Render one page to a PNG. Opens the document for this call — to render
+    several pages of one document, open it once with :class:`Document`. Rendering
+    needs no text extraction, so none is done.
     """
     with Document(source, options) as doc:
         return doc.render_page(page_number, dpi, region)
@@ -733,7 +757,9 @@ def get_page_count(
     source: PdfSource, options: "dict[str, Any] | None" = None
 ) -> int:
     """
-    Get the number of pages (sections) in a PDF file.
+    Get the number of pages in a PDF file, read from its page tree without
+    extracting anything — every page the document has, whatever the ``pages``
+    option selects (``options`` is for opening it, such as a ``password``).
 
     Args:
         source: Path to the PDF file (``str`` or ``os.PathLike``), or the
@@ -749,15 +775,11 @@ def get_page_count(
             wrong-typed argument is a caller bug, not an unparsable PDF, so it is
             not folded into the ``-1`` return.
     """
-    lib = get_library()
     try:
-        handle = _parse_file(lib, source, options)
+        with Document(source, options) as doc:
+            return doc.page_count
     except UnpdfError:
         return -1
-    try:
-        return lib.unpdf_section_count(handle)
-    finally:
-        lib.unpdf_free_document(handle)
 
 
 def is_pdf(source: PdfSource, options: "dict[str, Any] | None" = None) -> bool:

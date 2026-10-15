@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- **A document can be opened without extracting it.** `unpdf_open_file_with_options` /
+  `unpdf_open_bytes_with_options` read the file's structure (and decrypt it with a `password`)
+  and stop there; the content is extracted the first time something asks for it, with the
+  options given at open. `unpdf_page_count` counts the pages in the page tree -- every page,
+  whatever `pages` selects -- and needs no extraction, nor does `unpdf_render_page`.
+
+### Changed
+
+- **Python: `Document` opens the PDF instead of extracting it**, so counting and rendering
+  pages costs no extraction; an extraction error is raised by the first call that needs the
+  content. `Document.page_count` is new. `get_page_count` reads the page tree instead of
+  extracting the whole document (on a 199-page file it took as long as a full Markdown
+  conversion), and counts every page whatever the `pages` option selects. `render_page`
+  likewise opens the document only.
+
+### Fixed
+
+- **Python: a `Document` that fails to open no longer reports an error when it is collected.**
+  `__del__` read a handle the failed constructor never set.
+
 ## 0.46.0 — 2026-10-15
 
 ### Added

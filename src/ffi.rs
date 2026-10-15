@@ -56,10 +56,15 @@ fn json_err(e: serde_json::Error) -> FfiError {
     (ErrorKind::Render as c_int, e.to_string())
 }
 
-/// A parsed document, and the parser that read it — kept so a page can be painted
-/// ([`unpdf_render_page`]) without reading the file again. Reads as the [`Document`].
+/// A document, and the parser that read it — kept so a page can be painted
+/// ([`unpdf_render_page`]) or the pages counted ([`unpdf_page_count`]) without reading the
+/// file again.
+///
+/// The parse entry points extract the document when they open it. The open entry points
+/// (`unpdf_open_*`) only open it: the document is extracted the first time something asks for
+/// its content, so a caller that only counts or paints pages never pays for extraction.
 pub struct HeldDocument {
-    document: Document,
+    document: std::sync::OnceLock<Document>,
     parser: Option<crate::PdfParser>,
 }
 
@@ -67,9 +72,42 @@ impl HeldDocument {
     fn parsed(parser: crate::PdfParser) -> crate::Result<Self> {
         let document = parser.parse()?;
         Ok(Self {
-            document,
+            document: std::sync::OnceLock::from(document),
             parser: Some(parser),
         })
+    }
+
+    fn opened(parser: crate::PdfParser) -> Self {
+        Self {
+            document: std::sync::OnceLock::new(),
+            parser: Some(parser),
+        }
+    }
+
+    /// The extracted document, extracting it now if it has not been. A failed extraction is
+    /// reported, and tried again by the next call.
+    fn document(&self) -> Result<&Document, FfiError> {
+        if let Some(document) = self.document.get() {
+            return Ok(document);
+        }
+        let parser = self.parser.as_ref().ok_or_else(|| {
+            (
+                ErrorKind::Other as c_int,
+                "this document handle holds neither a document nor a parser".to_string(),
+            )
+        })?;
+        let document = parser.parse().map_err(ffi_err)?;
+        Ok(self.document.get_or_init(|| document))
+    }
+
+    /// The document's pages, counted in its page tree — every page, whatever the options
+    /// select for extraction.
+    fn page_count(&self) -> u32 {
+        match (&self.parser, self.document.get()) {
+            (Some(parser), _) => parser.page_count(),
+            (None, Some(document)) => document.page_count(),
+            (None, None) => 0,
+        }
     }
 }
 
@@ -84,17 +122,9 @@ impl std::panic::UnwindSafe for HeldDocument {}
 impl From<Document> for HeldDocument {
     fn from(document: Document) -> Self {
         Self {
-            document,
+            document: std::sync::OnceLock::from(document),
             parser: None,
         }
-    }
-}
-
-impl std::ops::Deref for HeldDocument {
-    type Target = Document;
-
-    fn deref(&self) -> &Document {
-        &self.document
     }
 }
 
@@ -728,6 +758,107 @@ pub unsafe extern "C" fn unpdf_parse_bytes_with_options(
     }
 }
 
+/// Open a document from a file path, with options, without extracting it.
+///
+/// Opening reads the file's structure — its cross-reference table, its page tree, and with
+/// a `password` its encryption — and is what fails for a file that is not a PDF. The content
+/// is extracted the first time something asks for it (`unpdf_to_markdown`, `unpdf_get_title`,
+/// ...), with the options given here; `unpdf_page_count` and `unpdf_render_page` never need
+/// it. A caller that only counts or paints pages pays for neither.
+///
+/// # Safety
+///
+/// - `path` must be a valid null-terminated UTF-8 string.
+/// - `options_json` may be null (equivalent to default options) or a valid null-terminated
+///   UTF-8 JSON string matching [`FfiParseOptions`]'s schema (see that type's docs).
+/// - Returns null on error, including malformed `options_json`. Use `unpdf_last_error`.
+/// - The returned handle must be freed with `unpdf_free_document`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_open_file_with_options(
+    path: *const c_char,
+    options_json: *const c_char,
+) -> *mut UnpdfDocument {
+    LAST_ERROR.with(|slot| slot.clear());
+
+    let result: Result<*mut UnpdfDocument, FfiError> = ffi::catch(|| {
+        let path_str = unparser_shared::with_c_str!(path)?;
+        let options = parse_options_from_json(options_json)?;
+
+        crate::PdfParser::open_with_options(path_str, options)
+            .map(HeldDocument::opened)
+            .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
+            .map_err(ffi_err)
+    });
+
+    match result {
+        Ok(doc) => doc,
+        Err(error) => {
+            LAST_ERROR.with(|slot| slot.set_error(&error));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Open a document from a byte buffer, with options, without extracting it — see
+/// `unpdf_open_file_with_options`.
+///
+/// # Safety
+///
+/// - `data` must be a valid pointer to a byte buffer of at least `len` bytes.
+/// - `options_json` may be null (equivalent to default options) or a valid null-terminated
+///   UTF-8 JSON string matching [`FfiParseOptions`]'s schema (see that type's docs).
+/// - Returns null on error, including malformed `options_json`. Use `unpdf_last_error`.
+/// - The returned handle must be freed with `unpdf_free_document`.
+#[no_mangle]
+pub unsafe extern "C" fn unpdf_open_bytes_with_options(
+    data: *const u8,
+    len: usize,
+    options_json: *const c_char,
+) -> *mut UnpdfDocument {
+    LAST_ERROR.with(|slot| slot.clear());
+
+    if data.is_null() {
+        LAST_ERROR.with(|slot| slot.set_error(&invalid_argument("data is null")));
+        return ptr::null_mut();
+    }
+
+    let result: Result<*mut UnpdfDocument, FfiError> = ffi::catch(|| {
+        let bytes = std::slice::from_raw_parts(data, len);
+        let options = parse_options_from_json(options_json)?;
+
+        crate::PdfParser::from_bytes_with_options(bytes, options)
+            .map(HeldDocument::opened)
+            .map(|doc| Box::into_raw(Box::new(UnpdfDocument { inner: doc })))
+            .map_err(ffi_err)
+    });
+
+    match result {
+        Ok(doc) => doc,
+        Err(error) => {
+            LAST_ERROR.with(|slot| slot.set_error(&error));
+            ptr::null_mut()
+        }
+    }
+}
+
+unparser_shared::export_count_getter!(
+    /// Get the number of pages in the document's page tree.
+    ///
+    /// Every page the document has, whatever `pages` selects for extraction — unlike
+    /// `unpdf_section_count`, which counts the pages extracted. Needs no extraction: on a
+    /// handle from `unpdf_open_*` it reads only what opening read.
+    ///
+    /// # Safety
+    ///
+    /// - `doc` must be a valid document handle.
+    /// - Returns -1 on error.
+    LAST_ERROR,
+    unpdf_page_count(doc: UnpdfDocument),
+    {
+        Ok((*doc).inner.page_count() as c_int)
+    }
+);
+
 unparser_shared::export_string_getter!(
     /// Convert a document to Markdown.
     ///
@@ -740,7 +871,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_to_markdown(doc: UnpdfDocument, flags: u32),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let options = render_options_from_flags(flags)?;
         crate::render::to_markdown(document, &options).map_err(ffi_err)
     }
@@ -765,7 +896,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_to_markdown_with_options(doc: UnpdfDocument, options_json: *const c_char),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let options = render_options_from_json(options_json)?;
         crate::render::to_markdown(document, &options).map_err(ffi_err)
     }
@@ -782,7 +913,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_to_text(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let options = RenderOptions::default();
         crate::render::to_text(document, &options).map_err(ffi_err)
     }
@@ -800,7 +931,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_to_json(doc: UnpdfDocument, format: c_int),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let json_format = if format == UNPDF_JSON_COMPACT {
             JsonFormat::Compact
         } else {
@@ -821,7 +952,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_plain_text(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         Ok(document.plain_text())
     }
 );
@@ -836,7 +967,7 @@ unparser_shared::export_count_getter!(
     LAST_ERROR,
     unpdf_section_count(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         Ok(document.pages.len() as c_int)
     }
 );
@@ -860,7 +991,7 @@ unparser_shared::export_count_getter!(
     LAST_ERROR,
     unpdf_resource_count(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         Ok(document.resource_count() as c_int)
     }
 );
@@ -879,7 +1010,7 @@ unparser_shared::export_optional_string_getter!(
     LAST_ERROR,
     unpdf_get_title(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         Ok(document.metadata.title.clone())
     }
 );
@@ -898,7 +1029,7 @@ unparser_shared::export_optional_string_getter!(
     LAST_ERROR,
     unpdf_get_author(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         Ok(document.metadata.author.clone())
     }
 );
@@ -917,7 +1048,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_get_resource_ids(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let ids: Vec<&str> = document.resources().map(|(id, _)| id).collect();
         serde_json::to_string(&ids).map_err(json_err)
     }
@@ -943,7 +1074,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_get_extraction_quality(doc: UnpdfDocument),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         serde_json::to_string(&document.extraction_quality).map_err(json_err)
     }
 );
@@ -1003,7 +1134,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_page_stats(doc: UnpdfDocument, page_number: c_int),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let page = document
             .pages
             .iter()
@@ -1055,7 +1186,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_tables(doc: UnpdfDocument, tsv: c_int),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let delimiter = if tsv != 0 { '\t' } else { ',' };
         let tables: Vec<serde_json::Value> = document
             .tables()
@@ -1090,7 +1221,7 @@ unparser_shared::export_string_getter!(
     {
         let id_str = unparser_shared::with_c_str!(resource_id)?;
 
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
 
         match document.get_resource(id_str) {
             Some(resource) => {
@@ -1244,7 +1375,7 @@ unparser_shared::export_bytes_getter!(
     {
         let id_str = unparser_shared::ffi::c_str_utf8(resource_id)?;
 
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
 
         match document.get_resource(id_str) {
             Some(resource) => Ok(resource.data.clone()),
@@ -1269,7 +1400,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_page_to_markdown(doc: UnpdfDocument, page_num: c_int, flags: u32),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let page = document.get_page(page_num as u32).ok_or_else(|| {
             (
                 ErrorKind::PageOutOfRange as c_int,
@@ -1303,7 +1434,7 @@ unparser_shared::export_string_getter!(
     LAST_ERROR,
     unpdf_page_to_text(doc: UnpdfDocument, page_num: c_int),
     {
-        let document = &(*doc).inner;
+        let document = (*doc).inner.document()?;
         let page = document.get_page(page_num as u32).ok_or_else(|| {
             (
                 ErrorKind::PageOutOfRange as c_int,

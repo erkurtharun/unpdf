@@ -854,3 +854,28 @@ def test_a_library_path_naming_no_file_is_an_error(tmp_path):
     )
     assert result.returncode != 0
     assert "UNPDF_LIB_PATH" in result.stderr and missing.name in result.stderr
+
+
+def _three_page_pdf() -> bytes:
+    """Three empty pages."""
+    return _assemble([
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R 4 0 R 5 0 R]/Count 3>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>",
+    ])
+
+
+class TestOpenedDocument:
+    """A Document only opens the PDF: counting pages needs no extraction."""
+
+    def test_page_count_is_every_page_whatever_the_selection(self):
+        data = _three_page_pdf()
+        with unpdf.Document(data, {"pages": {"pages": [2]}}) as doc:
+            assert doc.page_count == 3
+        assert unpdf.get_page_count(data, {"pages": {"pages": [2]}}) == 3
+
+    def test_a_file_that_is_not_a_pdf_fails_to_open(self):
+        with pytest.raises(unpdf.UnpdfError):
+            unpdf.Document(b"not a pdf")

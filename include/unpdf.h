@@ -159,6 +159,26 @@ UnpdfDocument* unpdf_parse_file_with_options(const char* path, const char* optio
 UnpdfDocument* unpdf_parse_bytes_with_options(const uint8_t* data, size_t len,
                                               const char* options_json);
 
+/**
+ * Open a document from a file path, with options, without extracting it.
+ * Opening reads the file's structure (and decrypts it with a `password`); the
+ * content is extracted the first time something asks for it, with these options.
+ * unpdf_page_count() and unpdf_render_page() never need it.
+ * Same `options_json` contract as unpdf_parse_file_with_options().
+ * @return Document handle, or NULL on error. Must be freed with
+ *         unpdf_free_document.
+ */
+UnpdfDocument* unpdf_open_file_with_options(const char* path, const char* options_json);
+
+/**
+ * Open a document from a byte buffer, with options, without extracting it.
+ * See unpdf_open_file_with_options().
+ * @return Document handle, or NULL on error. Must be freed with
+ *         unpdf_free_document.
+ */
+UnpdfDocument* unpdf_open_bytes_with_options(const uint8_t* data, size_t len,
+                                             const char* options_json);
+
 /** Free a document handle. Safe to call with NULL. */
 void unpdf_free_document(UnpdfDocument* doc);
 
@@ -215,6 +235,13 @@ char* unpdf_plain_text(const UnpdfDocument* doc);
 
 /** Number of sections (pages), or -1 on error. */
 int unpdf_section_count(const UnpdfDocument* doc);
+
+/**
+ * Number of pages in the document's page tree — every page, whatever `pages`
+ * selects for extraction (unpdf_section_count counts the pages extracted).
+ * Needs no extraction. -1 on error.
+ */
+int unpdf_page_count(const UnpdfDocument* doc);
 
 /**
  * Number of extracted resources (images), or -1 on error.
