@@ -263,6 +263,38 @@ pub struct RawXObject {
     pub smask: Option<Box<RawXObject>>,
 }
 
+/// An axial or radial shading (ISO 32000-1 §8.7.4.5.3–4), its colors sampled along its
+/// parameter — what a rasterizer paints for `sh` or a shading pattern.
+#[derive(Debug, Clone)]
+pub struct Shading {
+    /// Where the shading runs, in shading space.
+    pub geometry: ShadingGeometry,
+    /// `/Extend`: whether the shading continues past its start and past its end.
+    pub extend: (bool, bool),
+    /// The color space of `samples`.
+    pub color: ImageColorSpace,
+    /// The shading's colors at [`SHADING_SAMPLES`] evenly spaced points from its start to its
+    /// end (its `/Domain`, through its `/Function`).
+    pub samples: Vec<Vec<f32>>,
+    /// `/BBox`, in shading space: `[x0 y0 x1 y1]`.
+    pub bbox: Option<[f32; 4]>,
+}
+
+/// How many points along a shading [`Shading::samples`] holds.
+pub const SHADING_SAMPLES: usize = 128;
+
+/// The geometry of a [`Shading`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShadingGeometry {
+    /// Type 2: colors vary along the axis from `from` to `to`.
+    Axial { from: (f32, f32), to: (f32, f32) },
+    /// Type 3: colors vary between the circle `from` and the circle `to`, each `(x, y, r)`.
+    Radial {
+        from: (f32, f32, f32),
+        to: (f32, f32, f32),
+    },
+}
+
 /// The format of an embedded font program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontFormat {
@@ -589,6 +621,19 @@ pub trait PdfBackend: Send + Sync {
     /// decoded as far as its filters go — what a rasterizer paints for `BI`. A named color
     /// space resolves in `scope`. `None` when the body is not one this reads.
     fn inline_image(&self, _scope: ResourceScope, _body: &[u8]) -> Option<RawXObject> {
+        None
+    }
+
+    /// The `/Shading` resource `name` refers to in `scope` — what `sh` paints. `None` when
+    /// the name does not resolve or the shading is not an axial or radial one this reads.
+    fn shading(&self, _scope: ResourceScope, _name: &[u8]) -> Option<Shading> {
+        None
+    }
+
+    /// The shading pattern (`/PatternType 2`) the `/Pattern` resource `name` refers to in
+    /// `scope`, with its `/Matrix` (pattern space → the page's default space). `None` for a
+    /// tiling pattern, or a shading this does not read.
+    fn shading_pattern(&self, _scope: ResourceScope, _name: &[u8]) -> Option<(Shading, [f32; 6])> {
         None
     }
 
@@ -997,6 +1042,40 @@ impl PdfBackend for RawBackend {
         Some(image)
     }
 
+    fn shading(&self, scope: ResourceScope, name: &[u8]) -> Option<Shading> {
+        let obj = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| {
+                let sub = res.category(&self.doc, b"Shading")?;
+                raw_dict_get(sub.dict, name).cloned()
+            })?;
+        read_shading(&self.doc, &obj)
+    }
+
+    fn shading_pattern(&self, scope: ResourceScope, name: &[u8]) -> Option<(Shading, [f32; 6])> {
+        let obj = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| {
+                let sub = res.category(&self.doc, b"Pattern")?;
+                raw_dict_get(sub.dict, name).cloned()
+            })?;
+        let dict = match self.doc.resolve(&obj) {
+            RawPdfObject::Dict(dict) => dict,
+            RawPdfObject::Stream(stream) => &stream.dict,
+            _ => return None,
+        };
+        let pattern_type =
+            raw_dict_get(dict, b"PatternType").and_then(|v| self.doc.resolve(v).as_i64());
+        if pattern_type != Some(2) {
+            return None;
+        }
+        let shading = read_shading(&self.doc, raw_dict_get(dict, b"Shading")?)?;
+        let matrix = raw_dict_get(dict, b"Matrix")
+            .and_then(|m| matrix_from(&self.doc, m))
+            .unwrap_or(IDENTITY_MATRIX);
+        Some((shading, matrix))
+    }
+
     fn ext_gstate(&self, scope: ResourceScope, name: &[u8]) -> Option<ExtGState> {
         let dict = resource_chain(&self.doc, scope)
             .into_iter()
@@ -1089,6 +1168,66 @@ fn inline_image_parts(body: &[u8]) -> Option<(RawPdfDict, &[u8])> {
 
 fn is_pdf_whitespace(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0 | 12)
+}
+
+/// Read an axial (type 2) or radial (type 3) shading dictionary.
+fn read_shading(doc: &RawDocument, obj: &RawPdfObject) -> Option<Shading> {
+    let dict = match doc.resolve(obj) {
+        RawPdfObject::Dict(dict) => dict,
+        RawPdfObject::Stream(stream) => &stream.dict,
+        _ => return None,
+    };
+    let kind = raw_dict_get(dict, b"ShadingType").and_then(|v| doc.resolve(v).as_i64())?;
+    let coords = numbers_from(doc, raw_dict_get(dict, b"Coords")?)?;
+    let geometry = match (kind, coords.as_slice()) {
+        (2, &[x0, y0, x1, y1]) => ShadingGeometry::Axial {
+            from: (x0, y0),
+            to: (x1, y1),
+        },
+        (3, &[x0, y0, r0, x1, y1, r1]) if r0 >= 0.0 && r1 >= 0.0 => ShadingGeometry::Radial {
+            from: (x0, y0, r0),
+            to: (x1, y1, r1),
+        },
+        _ => return None,
+    };
+    let color = resolve_image_color_space(doc, raw_dict_get(dict, b"ColorSpace")?, 0)?;
+    let function = super::function::Function::read(doc, raw_dict_get(dict, b"Function")?)?;
+    let (t0, t1) = match raw_dict_get(dict, b"Domain").and_then(|d| numbers_from(doc, d)) {
+        Some(d) if d.len() >= 2 => (d[0], d[1]),
+        _ => (0.0, 1.0),
+    };
+    let extend = match raw_dict_get(dict, b"Extend").map(|e| doc.resolve(e)) {
+        Some(RawPdfObject::Array(e)) => {
+            let flag = |i: usize| {
+                matches!(
+                    e.get(i).map(|v| doc.resolve(v)),
+                    Some(RawPdfObject::Bool(true))
+                )
+            };
+            (flag(0), flag(1))
+        }
+        _ => (false, false),
+    };
+    let components = color.components();
+    let samples: Vec<Vec<f32>> = (0..SHADING_SAMPLES)
+        .map(|i| {
+            let t = t0 + (t1 - t0) * i as f32 / (SHADING_SAMPLES - 1) as f32;
+            function.eval(t)
+        })
+        .collect();
+    if samples.iter().any(|s| s.len() < components) {
+        return None;
+    }
+    let bbox = raw_dict_get(dict, b"BBox")
+        .and_then(|b| numbers_from(doc, b))
+        .and_then(|b| <[f32; 4]>::try_from(b.as_slice()).ok());
+    Some(Shading {
+        geometry,
+        extend,
+        color,
+        samples,
+        bbox,
+    })
 }
 
 /// What [`RawBackend::collect_images`] has already seen on one page.

@@ -18,6 +18,7 @@ mod dedup;
 pub(crate) mod encoding;
 pub(crate) mod font;
 mod form_xobject;
+mod function;
 pub(crate) mod glyph_metrics;
 mod lattice;
 mod layout;

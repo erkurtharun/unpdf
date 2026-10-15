@@ -7,14 +7,17 @@
 //! way extraction counts what it could not read: the rest of the page is still painted.
 
 use tiny_skia::{
-    FillRule, FilterQuality, IntSize, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap,
-    PixmapPaint, Stroke, StrokeDash, Transform,
+    Color, FillRule, FilterQuality, GradientStop, IntSize, LineCap, LineJoin, LinearGradient, Mask,
+    Paint, Path, PathBuilder, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode,
+    Stroke, StrokeDash, Transform,
 };
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::backend::{
     ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue, RawXObject,
+    Shading, ShadingGeometry,
 };
 use super::png_encode::{self, PngColorType};
 use super::raster_text::LoadedFont;
@@ -63,7 +66,9 @@ pub struct RasterGaps {
     /// Inline images (`BI … EI`) not painted: a dictionary that does not read. One that reads
     /// but is in a codec or color space this does not decode is counted in `images`.
     pub inline_images: u32,
-    /// Shadings (`sh`, or a shading pattern used as a color) not painted.
+    /// Shadings (`sh`) and pattern colors not painted: mesh shadings (types 4–7), function
+    /// shadings (type 1), a PostScript calculator function, and tiling patterns. Axial and
+    /// radial shadings are painted.
     pub shadings: u32,
     /// Content streams of the page that could not be decoded; whatever they held is missing.
     pub undecodable_content_streams: u32,
@@ -169,6 +174,7 @@ pub(crate) fn render_page(
     let mut painter = Painter {
         backend,
         page,
+        base,
         pixmap,
         state: GState::new(base),
         stack: Vec::new(),
@@ -279,9 +285,14 @@ struct GState {
     stroke_space: PaintSpace,
     fill_alpha: f32,
     stroke_alpha: f32,
-    /// Whether the current fill/stroke color is a pattern (not painted).
+    /// Whether the current fill/stroke color is a pattern.
     fill_pattern: bool,
     stroke_pattern: bool,
+    /// The shading of the current fill/stroke pattern, with the transform from its pattern
+    /// space to device pixels; `None` when the pattern is not a shading this paints (a tiling
+    /// pattern is a gap).
+    fill_shading: Option<Rc<(Shading, Transform)>>,
+    stroke_shading: Option<Rc<(Shading, Transform)>>,
     line_width: f32,
     cap: LineCap,
     join: LineJoin,
@@ -313,6 +324,8 @@ impl GState {
             stroke_alpha: 1.0,
             fill_pattern: false,
             stroke_pattern: false,
+            fill_shading: None,
+            stroke_shading: None,
             line_width: 1.0,
             cap: LineCap::Butt,
             join: LineJoin::Miter,
@@ -327,6 +340,8 @@ impl GState {
 struct Painter<'a> {
     backend: &'a dyn PdfBackend,
     page: PageId,
+    /// The page's default space → device pixels: what a pattern's matrix is relative to.
+    base: Transform,
     pixmap: Pixmap,
     state: GState,
     stack: Vec<GState>,
@@ -459,10 +474,16 @@ impl Painter<'_> {
             "sc" | "scn" => {
                 let space = self.state.fill_space.clone();
                 self.set_fill(space, &all());
+                if self.state.fill_pattern {
+                    self.state.fill_shading = self.pattern_shading(op);
+                }
             }
             "SC" | "SCN" => {
                 let space = self.state.stroke_space.clone();
                 self.set_stroke(space, &all());
+                if self.state.stroke_pattern {
+                    self.state.stroke_shading = self.pattern_shading(op);
+                }
             }
 
             // Path construction (user space).
@@ -547,7 +568,16 @@ impl Painter<'_> {
                     None => self.gaps.inline_images += 1,
                 }
             }
-            "sh" => self.gaps.shadings += 1,
+            "sh" => {
+                let shading = match op.operands.first() {
+                    Some(PdfValue::Name(name)) => self.backend.shading(op.scope(self.page), name),
+                    _ => None,
+                };
+                match shading {
+                    Some(shading) => self.paint_shading(&shading),
+                    None => self.gaps.shadings += 1,
+                }
+            }
 
             // Text: the state and position were applied above; `'` and `"` have moved to
             // the next line, and `"` set its spacing.
@@ -732,6 +762,7 @@ impl Painter<'_> {
 
     fn set_fill(&mut self, space: PaintSpace, values: &[f32]) {
         self.state.fill_pattern = space == PaintSpace::Pattern;
+        self.state.fill_shading = None;
         if let Some(color) = space.color(values) {
             self.state.fill = color;
         }
@@ -740,6 +771,7 @@ impl Painter<'_> {
 
     fn set_stroke(&mut self, space: PaintSpace, values: &[f32]) {
         self.state.stroke_pattern = space == PaintSpace::Pattern;
+        self.state.stroke_shading = None;
         if let Some(color) = space.color(values) {
             self.state.stroke = color;
         }
@@ -756,24 +788,37 @@ impl Painter<'_> {
         let path = builder.finish();
         if let Some(path) = &path {
             if let Some(rule) = fill {
-                if self.state.fill_pattern {
-                    self.gaps.shadings += 1;
+                let paint = if self.state.fill_pattern {
+                    self.state
+                        .fill_shading
+                        .as_deref()
+                        .and_then(|(s, t)| self.pattern_paint(s, *t, self.state.fill_alpha))
                 } else {
-                    let paint = solid(self.state.fill, self.state.fill_alpha);
-                    self.pixmap.fill_path(
+                    Some(solid(self.state.fill, self.state.fill_alpha))
+                };
+                match paint {
+                    Some(paint) => self.pixmap.fill_path(
                         path,
                         &paint,
                         rule,
                         self.state.ctm,
                         self.state.clip.as_ref(),
-                    );
+                    ),
+                    None => self.gaps.shadings += 1,
                 }
             }
             if stroke {
-                if self.state.stroke_pattern {
-                    self.gaps.shadings += 1;
+                let paint = if self.state.stroke_pattern {
+                    self.state
+                        .stroke_shading
+                        .as_deref()
+                        .and_then(|(s, t)| self.pattern_paint(s, *t, self.state.stroke_alpha))
                 } else {
-                    self.stroke(path);
+                    Some(solid(self.state.stroke, self.state.stroke_alpha))
+                };
+                match paint {
+                    Some(paint) => self.stroke(path, &paint),
+                    None => self.gaps.shadings += 1,
                 }
             }
         }
@@ -782,8 +827,62 @@ impl Painter<'_> {
         }
     }
 
-    fn stroke(&mut self, path: &Path) {
-        let paint = solid(self.state.stroke, self.state.stroke_alpha);
+    /// The shading of the pattern `scn`/`SCN` names (its last operand), placed by its matrix
+    /// relative to the page's default space.
+    fn pattern_shading(&self, op: &ContentOp) -> Option<Rc<(Shading, Transform)>> {
+        let Some(PdfValue::Name(name)) = op.operands.last() else {
+            return None;
+        };
+        let (shading, [a, b, c, d, e, f]) =
+            self.backend.shading_pattern(op.scope(self.page), name)?;
+        let transform = self.base.pre_concat(Transform::from_row(a, b, c, d, e, f));
+        Some(Rc::new((shading, transform)))
+    }
+
+    /// A pattern's shading as a paint for a path drawn in the current user space. The path's
+    /// transform (the CTM) applies to the shader too, so the shader is placed by the CTM's
+    /// inverse followed by the pattern's own transform to device pixels.
+    fn pattern_paint(
+        &self,
+        shading: &Shading,
+        to_device: Transform,
+        alpha: f32,
+    ) -> Option<Paint<'static>> {
+        let to_user = self.state.ctm.invert()?.pre_concat(to_device);
+        shading_paint(shading, to_user, alpha)
+    }
+
+    /// `sh`: paint a shading over the clip — or over its `/BBox` — in the current user space,
+    /// which is the shading's space.
+    fn paint_shading(&mut self, shading: &Shading) {
+        // The rectangle painted and the transform it is drawn with — which the shader is
+        // drawn with too: in user space the shader needs no transform of its own, in device
+        // pixels it needs the CTM.
+        let (rect, transform, shader_transform) = match shading.bbox {
+            Some([x0, y0, x1, y1]) => (
+                Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)),
+                self.state.ctm,
+                Transform::identity(),
+            ),
+            None => {
+                let (w, h) = (self.pixmap.width() as f32, self.pixmap.height() as f32);
+                (
+                    Rect::from_xywh(0.0, 0.0, w, h),
+                    Transform::identity(),
+                    self.state.ctm,
+                )
+            }
+        };
+        let paint = shading_paint(shading, shader_transform, self.state.fill_alpha);
+        let (Some(rect), Some(paint)) = (rect, paint) else {
+            self.gaps.shadings += 1;
+            return;
+        };
+        self.pixmap
+            .fill_rect(rect, &paint, transform, self.state.clip.as_ref());
+    }
+
+    fn stroke(&mut self, path: &Path, paint: &Paint) {
         // Width 0 is the thinnest line the device can show; a line thinner than a pixel is
         // drawn one pixel wide so it does not vanish.
         let scale = transform_scale(&self.state.ctm);
@@ -808,7 +907,7 @@ impl Painter<'_> {
         }
         self.pixmap.stroke_path(
             path,
-            &paint,
+            paint,
             &stroke,
             self.state.ctm,
             self.state.clip.as_ref(),
@@ -1010,6 +1109,62 @@ fn decode_jpeg(data: &[u8], w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
         return None;
     }
     (pixels.len() == w as usize * h as usize * 3).then_some((PngColorType::Rgb, pixels))
+}
+
+/// A paint whose shader is `shading`, its shading space mapped by `transform` into the space
+/// the paint is drawn in. `None` when its colors do not convert or its geometry is degenerate.
+///
+/// The colors are the shading's samples as gradient stops. Where the shading does not extend
+/// past an end, a transparent stop sits exactly at that end and the first color just inside
+/// it, so padding past the end paints nothing.
+fn shading_paint(shading: &Shading, transform: Transform, alpha: f32) -> Option<Paint<'static>> {
+    let space = PaintSpace::of_image_space(&shading.color);
+    let colors: Option<Vec<Rgb>> = shading.samples.iter().map(|s| space.color(s)).collect();
+    let colors = colors?;
+    let last = colors.len().checked_sub(1)?;
+    // How far inside an end its first color starts when the end is not extended.
+    const EDGE: f32 = 1.0 / 4096.0;
+    let color = |c: Rgb| Color::from_rgba(c.0, c.1, c.2, alpha.clamp(0.0, 1.0));
+    let mut stops = Vec::with_capacity(colors.len() + 2);
+    if !shading.extend.0 {
+        stops.push(GradientStop::new(0.0, Color::TRANSPARENT));
+    }
+    for (i, &c) in colors.iter().enumerate() {
+        let mut pos = i as f32 / last.max(1) as f32;
+        if i == 0 && !shading.extend.0 {
+            pos = EDGE;
+        }
+        if i == last && !shading.extend.1 {
+            pos = 1.0 - EDGE;
+        }
+        stops.push(GradientStop::new(pos, color(c)?));
+    }
+    if !shading.extend.1 {
+        stops.push(GradientStop::new(1.0, Color::TRANSPARENT));
+    }
+    let shader: Shader<'static> = match shading.geometry {
+        ShadingGeometry::Axial { from, to } => LinearGradient::new(
+            Point::from_xy(from.0, from.1),
+            Point::from_xy(to.0, to.1),
+            stops,
+            SpreadMode::Pad,
+            transform,
+        )?,
+        ShadingGeometry::Radial { from, to } => RadialGradient::new(
+            Point::from_xy(from.0, from.1),
+            from.2,
+            Point::from_xy(to.0, to.1),
+            to.2,
+            stops,
+            SpreadMode::Pad,
+            transform,
+        )?,
+    };
+    Some(Paint {
+        shader,
+        anti_alias: true,
+        ..Paint::default()
+    })
 }
 
 fn solid(color: Rgb, alpha: f32) -> Paint<'static> {

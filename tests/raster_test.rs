@@ -201,6 +201,175 @@ fn an_inline_image_that_does_not_read_is_reported() {
     );
 }
 
+/// Red to blue, linearly.
+const RED_TO_BLUE: &str = "<</FunctionType 2/Domain[0 1]/C0[1 0 0]/C1[0 0 1]/N 1>>";
+
+/// Shading resources inherited from the Pages node: `/Sh` is `shading`.
+fn with_shading(shading: &str) -> String {
+    format!("/Resources<</Shading<</Sh {shading}>>>>")
+}
+
+#[test]
+fn an_axial_shading_runs_from_its_start_color_to_its_end_color() {
+    let shading = format!(
+        "<</ShadingType 2/ColorSpace/DeviceRGB/Coords[0 0 595 0]/Function {RED_TO_BLUE}\
+          /Extend[true true]>>"
+    );
+    let page = render(&page_pdf(&with_shading(&shading), A4, b"/Sh sh"), &PT);
+    assert!(near(px(&page, 2, 400), RED), "{:?}", px(&page, 2, 400));
+    assert!(
+        near(px(&page, 592, 400), [0, 0, 255]),
+        "{:?}",
+        px(&page, 592, 400)
+    );
+    let mid = px(&page, 297, 400);
+    assert!(near(mid, [128, 0, 128]), "{mid:?}");
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_shading_that_does_not_extend_stops_at_its_ends() {
+    let shading = format!(
+        "<</ShadingType 2/ColorSpace/DeviceRGB/Coords[100 0 200 0]/Function {RED_TO_BLUE}>>"
+    );
+    let page = render(&page_pdf(&with_shading(&shading), A4, b"/Sh sh"), &PT);
+    assert!(near(px(&page, 50, 400), WHITE), "{:?}", px(&page, 50, 400));
+    assert!(
+        near(px(&page, 150, 400), [128, 0, 128]),
+        "{:?}",
+        px(&page, 150, 400)
+    );
+    assert!(
+        near(px(&page, 250, 400), WHITE),
+        "{:?}",
+        px(&page, 250, 400)
+    );
+}
+
+#[test]
+fn a_radial_shading_runs_between_its_circles() {
+    // Red at the centre to blue at radius 100, nothing past it.
+    let shading = format!(
+        "<</ShadingType 3/ColorSpace/DeviceRGB/Coords[300 400 0 300 400 100]/Function {RED_TO_BLUE}>>"
+    );
+    let page = render(&page_pdf(&with_shading(&shading), A4, b"/Sh sh"), &PT);
+    assert!(
+        near(px(&page, 300, 842 - 400), RED),
+        "{:?}",
+        px(&page, 300, 442)
+    );
+    assert!(
+        near(px(&page, 350, 842 - 400), [128, 0, 128]),
+        "{:?}",
+        px(&page, 350, 442)
+    );
+    assert!(
+        near(px(&page, 300, 842 - 550), WHITE),
+        "{:?}",
+        px(&page, 300, 292)
+    );
+}
+
+#[test]
+fn a_shading_pattern_fills_a_path() {
+    // The pattern's shading is placed in the page's default space, not the current one.
+    let resources = format!(
+        "/Resources<</Pattern<</P0<</PatternType 2/Shading<</ShadingType 2/ColorSpace/DeviceRGB\
+          /Coords[100 0 300 0]/Function {RED_TO_BLUE}/Extend[true true]>>>>>>>>"
+    );
+    let page = render(
+        &page_pdf(
+            &resources,
+            A4,
+            b"q 1 0 0 1 50 0 cm /Pattern cs /P0 scn 50 100 200 200 re f Q",
+        ),
+        &PT,
+    );
+    // The rectangle spans x 100..300 on the page; the gradient runs over the same span.
+    assert!(
+        near(px(&page, 102, 842 - 200), RED),
+        "{:?}",
+        px(&page, 102, 642)
+    );
+    assert!(
+        near(px(&page, 200, 842 - 200), [128, 0, 128]),
+        "{:?}",
+        px(&page, 200, 642)
+    );
+    assert!(
+        near(px(&page, 200, 842 - 50), WHITE),
+        "{:?}",
+        px(&page, 200, 792)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_stitched_function_shades_each_part() {
+    // Red to blue over the first half, then blue to green.
+    let function = "<</FunctionType 3/Domain[0 1]/Bounds[0.5]/Encode[0 1 0 1]/Functions[\
+                    <</FunctionType 2/Domain[0 1]/C0[1 0 0]/C1[0 0 1]/N 1>>\
+                    <</FunctionType 2/Domain[0 1]/C0[0 0 1]/C1[0 1 0]/N 1>>]>>";
+    let shading = format!(
+        "<</ShadingType 2/ColorSpace/DeviceRGB/Coords[0 0 400 0]/Function {function}\
+          /Extend[true true]>>"
+    );
+    let page = render(&page_pdf(&with_shading(&shading), A4, b"/Sh sh"), &PT);
+    assert!(
+        near(px(&page, 200, 400), [0, 0, 255]),
+        "{:?}",
+        px(&page, 200, 400)
+    );
+    assert!(
+        near(px(&page, 300, 400), [0, 128, 128]),
+        "{:?}",
+        px(&page, 300, 400)
+    );
+}
+
+#[test]
+fn a_shading_with_a_bounding_box_paints_only_inside_it() {
+    // A red-to-blue axis across the page, bounded to x 100..200, under a moved origin.
+    let shading = format!(
+        "<</ShadingType 2/ColorSpace/DeviceRGB/Coords[0 0 400 0]/Function {RED_TO_BLUE}\
+          /Extend[true true]/BBox[100 0 200 842]>>"
+    );
+    let page = render(
+        &page_pdf(&with_shading(&shading), A4, b"q 1 0 0 1 100 0 cm /Sh sh Q"),
+        &PT,
+    );
+    // Shading space is user space: x 100..200 there is 200..300 on the page.
+    assert!(
+        near(px(&page, 150, 400), WHITE),
+        "{:?}",
+        px(&page, 150, 400)
+    );
+    assert!(
+        near(px(&page, 300 - 2, 400), [128, 0, 128]),
+        "{:?}",
+        px(&page, 298, 400)
+    );
+    assert!(
+        near(px(&page, 350, 400), WHITE),
+        "{:?}",
+        px(&page, 350, 400)
+    );
+}
+
+#[test]
+fn a_shading_this_does_not_read_is_reported() {
+    // A free-form triangle mesh (type 4).
+    let page = render(
+        &page_pdf(
+            &with_shading("<</ShadingType 4/ColorSpace/DeviceRGB>>"),
+            A4,
+            b"/Sh sh",
+        ),
+        &PT,
+    );
+    assert_eq!(page.gaps.shadings, 1, "{:?}", page.gaps);
+}
+
 #[test]
 fn a_jpeg_image_is_decoded() {
     let jpeg = include_bytes!("fixtures/solid_red_4x2.jpg");

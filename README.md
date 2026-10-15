@@ -682,9 +682,10 @@ if !page.gaps.is_empty() {
 ```
 
 Painted: text in embedded Type 1, TrueType, OpenType and CFF fonts, paths, clipping, colors,
-and images, inline ones included (Flate-family and JPEG, with soft and stencil masks). Not yet:
-Type 3 fonts, JPEG 2000/JBIG2/CCITT images and shadings — each is counted in `gaps`, and the rest
-of the page is still painted.
+axial and radial shadings (`sh` and shading patterns), and images, inline ones included
+(Flate-family and JPEG, with soft and stencil masks). Not yet: Type 3 fonts, JPEG 2000/JBIG2/CCITT
+images, mesh shadings and tiling patterns — each is counted in `gaps`, and the rest of the page is
+still painted.
 
 Text in a font the PDF names but does not embed — the standard 14, or a system font such as
 Arial or Times New Roman — is painted in a stand-in face of the same class (sans, serif or

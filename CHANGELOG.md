@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Axial and radial shadings are painted.** `sh` and a fill or stroke in a shading pattern
+  (`/PatternType 2`) were skipped by the renderer and counted in `gaps.shadings`; a type 2
+  (axial) or type 3 (radial) shading is now painted, its colors from a sampled, exponential or
+  stitching function (or an array of them), with `/Extend`, `/BBox` and the pattern's
+  `/Matrix`. `gaps.shadings` now counts what is still not painted: mesh and function-based
+  shadings, a PostScript calculator function, and tiling patterns.
 - **Inline images are painted.** A page's `BI … ID … EI` image was skipped by the renderer
   and counted in `gaps.inline_images`; it is now read like an image XObject -- the
   abbreviated keys (`W`, `H`, `BPC`, `CS`, `F`, `DP`, `D`, `IM`) and filter names, a named

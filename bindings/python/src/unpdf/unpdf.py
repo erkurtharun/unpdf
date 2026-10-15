@@ -612,7 +612,8 @@ class RenderedPage:
     ``gaps`` counts, by reason, what the renderer left out — ``text_runs``
     (text in fonts that are not embedded and have no stand-in, or are Type 3),
     ``images`` (codecs it does not decode), ``inline_images`` (inline images
-    whose dictionary does not read), ``shadings`` and
+    whose dictionary does not read), ``shadings`` (mesh shadings and tiling
+    patterns) and
     ``undecodable_content_streams``. All zero means everything was painted;
     otherwise the rest of the page still was.
 
