@@ -261,6 +261,50 @@ pub struct RawXObject {
     pub image_mask: bool,
     /// `/SMask`: a grayscale image giving each pixel's opacity.
     pub smask: Option<Box<RawXObject>>,
+    /// What the image codec in `filter` reads besides `data`; `None` for a codec that reads
+    /// nothing else, or when `data` is samples.
+    pub codec_parms: Option<CodecParms>,
+}
+
+/// What an image codec reads besides the image's data.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CodecParms {
+    /// `/CCITTFaxDecode`'s `/DecodeParms`.
+    Ccitt(CcittParms),
+}
+
+/// `/CCITTFaxDecode`'s parameters (ISO 32000-1 §7.4.6, Table 11), defaults filled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CcittParms {
+    /// `/K`: negative for Group 4, 0 for Group 3 one-dimensional, positive for Group 3
+    /// two-dimensional.
+    pub k: i64,
+    /// `/Columns`: the width of a row, in pixels (default 1728).
+    pub columns: u32,
+    /// `/Rows`: the number of rows, `None` when not given (the image's height then).
+    pub rows: Option<u32>,
+    /// `/BlackIs1`: whether a 1 sample is black (default: 0 is black).
+    pub black_is_1: bool,
+    /// `/EncodedByteAlign`: whether each row starts on a byte boundary.
+    pub encoded_byte_align: bool,
+    /// `/EndOfLine`: whether rows end in end-of-line codes.
+    pub end_of_line: bool,
+    /// `/EndOfBlock`: whether the data may end in an end-of-block code (default true).
+    pub end_of_block: bool,
+}
+
+impl Default for CcittParms {
+    fn default() -> Self {
+        CcittParms {
+            k: 0,
+            columns: 1728,
+            rows: None,
+            black_is_1: false,
+            encoded_byte_align: false,
+            end_of_line: false,
+            end_of_block: true,
+        }
+    }
 }
 
 /// An axial or radial shading (ISO 32000-1 §8.7.4.5.3–4), its colors sampled along its
@@ -1429,6 +1473,10 @@ impl RawBackend {
             Some(RawPdfObject::Bool(true))
         );
         let color_space_entry = raw_dict_get(dict, b"ColorSpace");
+        let codec_parms = match filter.as_deref() {
+            Some("CCITTFaxDecode") => Some(CodecParms::Ccitt(self.ccitt_parms(dict))),
+            _ => None,
+        };
         let smask = (depth == 0)
             .then(|| raw_dict_get(dict, b"SMask"))
             .flatten()
@@ -1451,7 +1499,46 @@ impl RawBackend {
             decode: raw_dict_get(dict, b"Decode").and_then(|d| numbers_from(&self.doc, d)),
             image_mask,
             smask,
+            codec_parms,
         }
+    }
+
+    /// The `/DecodeParms` of the last filter in `dict`'s chain: the image codec's, when the
+    /// chain ends in one. `DecodeParms` is a dictionary, or an array parallel to `Filter`.
+    fn last_decode_parms<'d>(&'d self, dict: &'d RawPdfDict) -> Option<&'d RawPdfDict> {
+        match self.doc.resolve(raw_dict_get(dict, b"DecodeParms")?) {
+            RawPdfObject::Dict(parms) => Some(parms),
+            RawPdfObject::Array(items) => match self.doc.resolve(items.last()?) {
+                RawPdfObject::Dict(parms) => Some(parms),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn ccitt_parms(&self, dict: &RawPdfDict) -> CcittParms {
+        let mut parms = CcittParms::default();
+        let Some(given) = self.last_decode_parms(dict) else {
+            return parms;
+        };
+        let value = |key: &[u8]| raw_dict_get(given, key).map(|v| self.doc.resolve(v));
+        let int = |key: &[u8]| value(key).and_then(|v| v.as_i64());
+        let flag = |key: &[u8]| match value(key) {
+            Some(RawPdfObject::Bool(b)) => Some(*b),
+            _ => None,
+        };
+        if let Some(k) = int(b"K") {
+            parms.k = k;
+        }
+        if let Some(columns) = int(b"Columns").and_then(|c| u32::try_from(c).ok()) {
+            parms.columns = columns;
+        }
+        parms.rows = int(b"Rows").and_then(|r| u32::try_from(r).ok());
+        parms.black_is_1 = flag(b"BlackIs1").unwrap_or(parms.black_is_1);
+        parms.encoded_byte_align = flag(b"EncodedByteAlign").unwrap_or(parms.encoded_byte_align);
+        parms.end_of_line = flag(b"EndOfLine").unwrap_or(parms.end_of_line);
+        parms.end_of_block = flag(b"EndOfBlock").unwrap_or(parms.end_of_block);
+        parms
     }
 
     /// List the images in `scope`'s XObject resources, descending into its forms.

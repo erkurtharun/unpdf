@@ -492,6 +492,88 @@ fn a_jpeg_image_is_decoded() {
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
 
+/// A 16 x 8 fax image, white on the left half and black on the right, as MuPDF renders it:
+/// Group 4, and Group 3 one-dimensional with end-of-line codes (both written by libtiff).
+const G4_HALVES: &[u8] = &[0x33, 0x17, 0xff, 0xf0, 0x01, 0x00, 0x10];
+const G3_HALVES: &[u8] = &[
+    0x00, 0x19, 0x8a, 0x00, 0x33, 0x14, 0x00, 0x66, 0x28, 0x00, 0xcc, 0x50, 0x01, 0x98, 0xa0, 0x03,
+    0x31, 0x40, 0x06, 0x62, 0x80, 0x0c, 0xc5,
+];
+
+/// A page drawing a 16 x 8 fax image over x 100..260, y 100..180.
+fn fax_page(entries: &str, data: &[u8]) -> RasteredPage {
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 16/Height 8{entries}\
+              /Filter/CCITTFaxDecode/Length {}>>",
+            data.len()
+        ),
+        data,
+    );
+    render(
+        &page_pdf_with_xobjects(
+            A4,
+            b"1 0 0 rg q 160 0 0 80 100 100 cm /F Do Q",
+            vec![("F", image)],
+        ),
+        &PT,
+    )
+}
+
+#[test]
+fn a_ccitt_image_is_decoded() {
+    for (name, entries, data) in [
+        (
+            "Group 4",
+            "/ColorSpace/DeviceGray/BitsPerComponent 1/DecodeParms<</K -1/Columns 16/Rows 8>>",
+            G4_HALVES,
+        ),
+        (
+            "Group 3",
+            "/ColorSpace/DeviceGray/BitsPerComponent 1\
+             /DecodeParms<</K 0/Columns 16/Rows 8/EndOfLine true>>",
+            G3_HALVES,
+        ),
+    ] {
+        let page = fax_page(entries, data);
+        assert!(near(px(&page, 120, 842 - 140), WHITE), "{name}: left");
+        assert!(near(px(&page, 240, 842 - 140), [0, 0, 0]), "{name}: right");
+        assert!(page.gaps.is_empty(), "{name}: {:?}", page.gaps);
+    }
+}
+
+#[test]
+fn black_is_1_inverts_a_ccitt_image() {
+    let page = fax_page(
+        "/ColorSpace/DeviceGray/BitsPerComponent 1\
+         /DecodeParms<</K -1/Columns 16/Rows 8/BlackIs1 true>>",
+        G4_HALVES,
+    );
+    assert!(near(px(&page, 120, 842 - 140), [0, 0, 0]));
+    assert!(near(px(&page, 240, 842 - 140), WHITE));
+}
+
+#[test]
+fn a_ccitt_stencil_mask_paints_the_fill_color() {
+    // A stencil marks where its samples are 0: the black half, in the fill color (red).
+    let page = fax_page(
+        "/ImageMask true/DecodeParms<</K -1/Columns 16/Rows 8>>",
+        G4_HALVES,
+    );
+    assert!(near(px(&page, 120, 842 - 140), WHITE));
+    assert!(near(px(&page, 240, 842 - 140), RED));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_ccitt_image_that_does_not_decode_is_reported() {
+    let page = fax_page(
+        "/ColorSpace/DeviceGray/BitsPerComponent 1/DecodeParms<</K -1/Columns 16/Rows 8>>",
+        &[0x00, 0x00, 0x00],
+    );
+    assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
+}
+
 #[test]
 fn a_stencil_mask_paints_the_fill_color_where_it_marks() {
     // 2 x 1 stencil: bit 0 (left) marks, bit 1 (right) does not.

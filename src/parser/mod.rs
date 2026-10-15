@@ -4,6 +4,7 @@ pub mod backend;
 #[rustfmt::skip]
 mod agl_data;
 pub mod bidi;
+mod ccitt;
 mod cff;
 mod clip;
 #[rustfmt::skip]

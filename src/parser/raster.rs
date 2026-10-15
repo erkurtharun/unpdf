@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::backend::{
-    ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue, RawXObject,
-    Shading, ShadingGeometry, TilingPattern, Type3Font,
+    CodecParms, ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue,
+    RawXObject, Shading, ShadingGeometry, TilingPattern, Type3Font,
 };
 use super::form_xobject;
 use super::png_encode::{self, PngColorType};
@@ -61,7 +61,7 @@ pub struct RasterGaps {
     /// and no standard face stands in for it, or is one this does not read, or a code
     /// selects no glyph in it (in a Type 3 font: no glyph procedure).
     pub text_runs: u32,
-    /// Images not painted: a codec this does not decode (JPEG 2000, JBIG2, CCITT), a color
+    /// Images not painted: a codec this does not decode (JPEG 2000, JBIG2), a color
     /// space it does not convert, or data that did not decode.
     pub images: u32,
     /// Inline images (`BI … EI`) not painted: a dictionary that does not read. One that reads
@@ -1303,16 +1303,14 @@ impl Painter<'_> {
             return None;
         }
         let mut rgba: Vec<u8> = if image.image_mask {
-            if image.filter.is_some() {
-                return None;
-            }
+            let samples = plain_samples(image, w, h)?;
             // 0 marks, unless `/Decode [1 0]` inverts it.
             let marks_on_one = image
                 .decode
                 .as_deref()
                 .is_some_and(|d| d.first() == Some(&1.0));
             let (_, bits) =
-                png_encode::image_pixels(w, h, 1, &ImageColorSpace::Gray, None, &image.data)?;
+                png_encode::image_pixels(w, h, 1, &ImageColorSpace::Gray, None, &samples)?;
             let Rgb(r, g, b) = self.state.fill;
             let c = [r, g, b].map(|v| (v * 255.0).round() as u8);
             bits.iter()
@@ -1403,19 +1401,29 @@ fn downsample(pixmap: Pixmap, target: (f32, f32)) -> Pixmap {
 
 /// An image's samples as 8-bit gray or RGB pixels, decoding the codecs this reads.
 fn decode_samples(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
-    match image.filter.as_deref() {
-        None => {
-            let color = image.color.as_ref()?;
-            png_encode::image_pixels(
-                w,
-                h,
-                image.bits_per_component?,
-                color,
-                image.decode.as_deref(),
-                &image.data,
-            )
+    if image.filter.as_deref() == Some("DCTDecode") {
+        return decode_jpeg(&image.data, w, h);
+    }
+    let samples = plain_samples(image, w, h)?;
+    png_encode::image_pixels(
+        w,
+        h,
+        image.bits_per_component?,
+        image.color.as_ref()?,
+        image.decode.as_deref(),
+        &samples,
+    )
+}
+
+/// The image's samples as an image without a codec stores them: its data, or the 1-bit
+/// samples a CCITT codec decodes to. `None` for any other codec.
+fn plain_samples(image: &RawXObject, w: u32, h: u32) -> Option<std::borrow::Cow<'_, [u8]>> {
+    use std::borrow::Cow;
+    match (image.filter.as_deref(), &image.codec_parms) {
+        (None, _) => Some(Cow::Borrowed(&image.data)),
+        (Some("CCITTFaxDecode"), Some(CodecParms::Ccitt(parms))) => {
+            super::ccitt::decode(&image.data, parms, w, h).map(Cow::Owned)
         }
-        Some("DCTDecode") => decode_jpeg(&image.data, w, h),
         _ => None,
     }
 }

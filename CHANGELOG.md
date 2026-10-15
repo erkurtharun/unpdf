@@ -25,6 +25,14 @@
   which was read as a tint before. As pdf.js does, what a cell paints past its step is cut off
   and a cell is at most 3000 pixels a side. A pattern nested more than three deep in its own
   cells is counted in `gaps.shadings`.
+- **CCITT fax images are decoded.** An image in `CCITTFaxDecode` -- Group 4, and Group 3 one-
+  and two-dimensional, with its `/DecodeParms` (`/K`, `/Columns`, `/Rows`, `/BlackIs1`,
+  `/EncodedByteAlign`, `/EndOfLine`, `/EndOfBlock`) -- was not painted and was counted in
+  `gaps.images`, and as a resource it came out as undecoded bytes. It is now decoded to the 1-bit
+  samples the filter produces and read like any 1-bit image: painted (a stencil mask in the fill
+  color), and re-encoded as PNG in the resource inventory. Data that goes wrong partway keeps the
+  rows decoded before it; a row wider than the image is cut to it. Scanned documents commonly
+  store their pages this way.
 - **Inline images are painted.** A page's `BI … ID … EI` image was skipped by the renderer
   and counted in `gaps.inline_images`; it is now read like an image XObject -- the
   abbreviated keys (`W`, `H`, `BPC`, `CS`, `F`, `DP`, `D`, `IM`) and filter names, a named

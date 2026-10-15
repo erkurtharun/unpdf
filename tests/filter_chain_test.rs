@@ -181,3 +181,17 @@ fn unfiltered_samples_are_reencoded_as_png() {
     assert_eq!(images.len(), 1);
     assert_eq!(images[0].mime_type, "image/png");
 }
+
+/// A fax image (Group 4, 16 x 8) is re-encoded as PNG from the samples the codec decodes to,
+/// as an image without a codec is.
+#[test]
+fn a_ccitt_image_is_reencoded_as_png() {
+    let pdf = image_page(
+        "/Width 16/Height 8/ColorSpace/DeviceGray/BitsPerComponent 1\
+         /Filter/CCITTFaxDecode/DecodeParms<</K -1/Columns 16/Rows 8>>",
+        &[0x33, 0x17, 0xff, 0xf0, 0x01, 0x00, 0x10],
+    );
+    let images = resources(&pdf);
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].mime_type, "image/png");
+}

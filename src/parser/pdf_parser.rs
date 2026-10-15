@@ -12,7 +12,7 @@ use crate::model::{
     TextRun, TextStyle,
 };
 
-use super::backend::{PdfBackend, RawBackend, RawXObject};
+use super::backend::{CodecParms, PdfBackend, RawBackend, RawXObject};
 use super::options::{ErrorMode, ParseOptions};
 
 /// PDF document parser.
@@ -331,8 +331,21 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
         color_space,
         color,
         decode,
+        codec_parms,
         ..
     } = xobj;
+
+    // A fax image is re-encoded as its decoded samples are: the bits the codec decodes to are
+    // what a 1-bit image without a codec stores.
+    let (data, filter) = match (filter.as_deref(), &codec_parms, width, height) {
+        (Some("CCITTFaxDecode"), Some(CodecParms::Ccitt(parms)), Some(w), Some(h)) => {
+            match super::ccitt::decode(&data, parms, w, h) {
+                Some(samples) => (samples, None),
+                None => (data, filter),
+            }
+        }
+        _ => (data, filter),
+    };
 
     let (data, mime_type) = match filter.as_deref() {
         Some("DCTDecode") => (data, "image/jpeg"),
