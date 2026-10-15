@@ -44,8 +44,9 @@ public sealed class RenderGaps
     [JsonPropertyName("inline_images")]
     public uint InlineImages { get; init; }
 
-    /// <summary>Shadings and pattern colors not painted: mesh and function-based shadings, and
-    /// tiling patterns. Axial and radial shadings are painted.</summary>
+    /// <summary>Shadings and pattern colors not painted: mesh and function-based shadings, and a
+    /// tiling pattern nested more than three deep. Axial and radial shadings and tiling patterns
+    /// are painted.</summary>
     [JsonPropertyName("shadings")]
     public uint Shadings { get; init; }
 

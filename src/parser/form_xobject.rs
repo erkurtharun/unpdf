@@ -57,6 +57,33 @@ pub(crate) fn page_operations(backend: &dyn PdfBackend, page: PageId) -> Result<
     })
 }
 
+/// The operators of content painted with `form`'s resources -- a tiling pattern's cell, whose
+/// operators already carry it as their form -- with the Form XObjects it paints interpreted in
+/// place. `undecodable_streams` counts the forms whose streams could not be decoded.
+pub(crate) fn content_operations(
+    backend: &dyn PdfBackend,
+    page: PageId,
+    ops: &[ContentOp],
+    form: ObjectId,
+) -> PageOperations {
+    let mut expander = Expander {
+        backend,
+        page,
+        out: Vec::with_capacity(ops.len()),
+        forms_painted: 0,
+        undecodable_streams: 0,
+        decoded: HashMap::new(),
+        // Its own content painting it again would never finish.
+        path: vec![form],
+    };
+    expander.paint(ops, Some(form));
+    PageOperations {
+        ops: expander.out,
+        forms_painted: expander.forms_painted,
+        undecodable_streams: expander.undecodable_streams,
+    }
+}
+
 struct Expander<'a> {
     backend: &'a dyn PdfBackend,
     page: PageId,

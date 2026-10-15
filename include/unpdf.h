@@ -343,8 +343,8 @@ uint8_t* unpdf_get_resource_data(const UnpdfDocument* doc,
  * from (the handle keeps the parser — no second read of the file).
  *
  * Anything the renderer cannot paint yet (text in fonts that are not embedded
- * and have no stand-in, some image codecs, mesh shadings, tiling patterns) is left
- * out and counted in out_info; the rest of the page is painted.
+ * and have no stand-in, some image codecs, mesh shadings) is left out and
+ * counted in out_info; the rest of the page is painted.
  *
  * @param page_number 1-indexed page number.
  * @param options_json NULL, or {"dpi": 150, "region": "crop" | "media"}.

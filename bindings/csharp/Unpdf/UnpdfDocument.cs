@@ -793,7 +793,7 @@ public class UnpdfDocument : IDisposable
     /// </summary>
     /// <remarks>
     /// Anything the renderer cannot paint yet (text in fonts that are not embedded and have
-    /// no stand-in, some image codecs, mesh shadings, tiling patterns) is left out and counted in
+    /// no stand-in, some image codecs, mesh shadings) is left out and counted in
     /// <see cref="RenderedPage.Gaps"/>; the rest of the page is painted.
     /// </remarks>
     /// <param name="pageNumber">Page number (1-indexed).</param>

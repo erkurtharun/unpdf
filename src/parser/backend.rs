@@ -306,6 +306,27 @@ pub struct Type3Font {
     pub glyphs: HashMap<u8, Vec<ContentOp>>,
 }
 
+/// A tiling pattern (`/PatternType 1`, ISO 32000-1 §8.7.3.3): a cell painted by its own
+/// content stream, repeated at `x_step`/`y_step` across pattern space.
+#[derive(Debug, Clone)]
+pub struct TilingPattern {
+    /// The pattern's object id: its operations resolve names in its `/Resources`, as a form's do.
+    pub id: ObjectId,
+    /// `/PaintType`: `true` for an uncolored pattern (2), whose cell is a shape painted in the
+    /// color given with the pattern; `false` for a colored one (1), which sets its own colors.
+    pub uncolored: bool,
+    /// `/BBox`, in pattern space: the cell, which clips what its content paints.
+    pub bbox: PageBox,
+    /// `/XStep`, `/YStep`: the spacing of the cells, in pattern space.
+    pub x_step: f32,
+    pub y_step: f32,
+    /// `/Matrix`: pattern space → the default space of the page, or of the form whose resources
+    /// hold it.
+    pub matrix: [f32; 6],
+    /// The cell's operations, `None` when its content stream could not be decoded.
+    pub ops: Option<Vec<ContentOp>>,
+}
+
 /// The format of an embedded font program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontFormat {
@@ -646,6 +667,23 @@ pub trait PdfBackend: Send + Sync {
     /// form whose resources hold it). `None` for a tiling pattern, or a shading this does not
     /// read.
     fn shading_pattern(&self, _scope: ResourceScope, _name: &[u8]) -> Option<(Shading, [f32; 6])> {
+        None
+    }
+
+    /// The tiling pattern the `/Pattern` resource `name` refers to in `scope`. `None` for a
+    /// shading pattern, or a dictionary without the cell's `/BBox` and steps.
+    fn tiling_pattern(&self, _scope: ResourceScope, _name: &[u8]) -> Option<TilingPattern> {
+        None
+    }
+
+    /// Whether the `/ColorSpace` resource `name` refers to in `scope` is a `Pattern` space:
+    /// `Some(base)`, where `base` is the space an uncolored pattern's color is given in (`None`
+    /// when the space has no base, or one this does not convert).
+    fn named_pattern_space(
+        &self,
+        _scope: ResourceScope,
+        _name: &[u8],
+    ) -> Option<Option<ImageColorSpace>> {
         None
     }
 
@@ -1091,6 +1129,71 @@ impl PdfBackend for RawBackend {
             .and_then(|m| matrix_from(&self.doc, m))
             .unwrap_or(IDENTITY_MATRIX);
         Some((shading, matrix))
+    }
+
+    fn tiling_pattern(&self, scope: ResourceScope, name: &[u8]) -> Option<TilingPattern> {
+        let id = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| {
+                let sub = res.category(&self.doc, b"Pattern")?;
+                raw_dict_get(sub.dict, name)?.as_reference()
+            })?;
+        // A tiling pattern is a stream, and a stream is always an indirect object.
+        let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
+        let dict = &stream.dict;
+        let int = |key: &[u8]| raw_dict_get(dict, key).and_then(|v| self.doc.resolve(v).as_i64());
+        let num = |key: &[u8]| raw_dict_get(dict, key).and_then(|v| self.doc.resolve(v).as_f32());
+        if int(b"PatternType") != Some(1) {
+            return None;
+        }
+        Some(TilingPattern {
+            id,
+            uncolored: int(b"PaintType") == Some(2),
+            bbox: raw_dict_get(dict, b"BBox").and_then(|b| page_box_from_array(&self.doc, b))?,
+            x_step: num(b"XStep")?,
+            y_step: num(b"YStep")?,
+            matrix: raw_dict_get(dict, b"Matrix")
+                .and_then(|m| matrix_from(&self.doc, m))
+                .unwrap_or(IDENTITY_MATRIX),
+            ops: raw_stream::decompress(stream)
+                .ok()
+                .and_then(|data| self.decode_content(&data).ok())
+                .map(|mut ops| {
+                    for op in &mut ops {
+                        op.form = Some(id);
+                    }
+                    ops
+                }),
+        })
+    }
+
+    fn named_pattern_space(
+        &self,
+        scope: ResourceScope,
+        name: &[u8],
+    ) -> Option<Option<ImageColorSpace>> {
+        let space = resource_chain(&self.doc, scope)
+            .into_iter()
+            .find_map(|res| {
+                let sub = res.category(&self.doc, b"ColorSpace")?;
+                raw_dict_get(sub.dict, name).cloned()
+            })?;
+        let doc = &self.doc;
+        match doc.resolve(&space) {
+            RawPdfObject::Name(n) if n.as_slice() == b"Pattern" => Some(None),
+            RawPdfObject::Array(arr)
+                if arr
+                    .first()
+                    .and_then(|o| doc.resolve(o).as_name())
+                    .is_some_and(|f| f == b"Pattern") =>
+            {
+                Some(
+                    arr.get(1)
+                        .and_then(|base| resolve_image_color_space(doc, base, 1)),
+                )
+            }
+            _ => None,
+        }
     }
 
     fn ext_gstate(&self, scope: ResourceScope, name: &[u8]) -> Option<ExtGState> {

@@ -618,20 +618,126 @@ fn text_in_a_shading_pattern_is_painted_in_its_colors() {
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
 
+/// A page whose resources hold the tiling pattern `/P0` (an indirect stream, as a pattern with a
+/// content stream must be), the color space `/CS0` = `[/Pattern /DeviceRGB]`, and `/F1`
+/// Helvetica.
+fn tiling_pdf(pattern_entries: &str, cell: &[u8], content: &[u8]) -> Vec<u8> {
+    assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Resources<</Pattern<</P0 5 0 R>>\
+             /ColorSpace<</CS0[/Pattern/DeviceRGB]>>/Font<</F1 6 0 R>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        stream_object(
+            &format!(
+                "<</Type/Pattern/PatternType 1/TilingType 1{pattern_entries}/Length {}>>",
+                cell.len()
+            ),
+            cell,
+        ),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_vec(),
+    ])
+}
+
+/// A red cell 10 pt square, repeated every 20 pt: its content paints the whole 20 pt step,
+/// but the `/BBox` clips it to its own 10.
+const RED_CHECKS: &str = "/PaintType 1/BBox[0 0 10 10]/XStep 20/YStep 20/Resources<<>>";
+const RED_CELL: &[u8] = b"1 0 0 rg 0 0 20 20 re f";
+
+#[test]
+fn a_tiling_pattern_repeats_its_cell_across_a_path() {
+    let page = render(
+        &tiling_pdf(
+            RED_CHECKS,
+            RED_CELL,
+            b"/Pattern cs /P0 scn 100 100 200 200 re f",
+        ),
+        &PT,
+    );
+    // Pattern space is the page's: a cell at every multiple of 20, red over its first 10.
+    for (x, y, expected) in [
+        (105, 105, RED),
+        (125, 105, RED),
+        (245, 285, RED),
+        (115, 105, WHITE), // past the cell's box, inside its step
+        (105, 115, WHITE),
+        (105, 50, WHITE), // outside the path
+    ] {
+        let got = px(&page, x, 842 - y - 1);
+        assert!(near(got, expected), "({x}, {y}): {got:?}");
+    }
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_tiling_pattern_is_placed_by_its_matrix() {
+    let page = render(
+        &tiling_pdf(
+            &format!("{RED_CHECKS}/Matrix[1 0 0 1 5 0]"),
+            RED_CELL,
+            b"/Pattern cs /P0 scn 100 100 200 200 re f",
+        ),
+        &PT,
+    );
+    // Moved 5 pt right: cells start at x = 5, 25, ...
+    assert!(near(px(&page, 108, 842 - 106), RED));
+    assert!(near(px(&page, 102, 842 - 106), WHITE));
+    assert!(near(px(&page, 116, 842 - 106), WHITE));
+}
+
+#[test]
+fn an_uncolored_tiling_pattern_paints_its_cell_in_the_color_given_with_it() {
+    // The cell's own color (green) is ignored: an uncolored pattern is a shape.
+    let page = render(
+        &tiling_pdf(
+            "/PaintType 2/BBox[0 0 10 10]/XStep 20/YStep 20/Resources<<>>",
+            b"0 1 0 rg 0 0 10 10 re f",
+            b"/CS0 cs 0 0 1 /P0 scn 100 100 200 200 re f",
+        ),
+        &PT,
+    );
+    assert!(
+        near(px(&page, 105, 842 - 106), [0, 0, 255]),
+        "{:?}",
+        px(&page, 105, 736)
+    );
+    assert!(near(px(&page, 115, 842 - 106), WHITE));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_tiling_pattern_painting_itself_ends_and_is_reported() {
+    // The cell fills with the pattern itself: the nesting stops, and what it left is a gap.
+    let page = render(
+        &tiling_pdf(
+            "/PaintType 1/BBox[0 0 10 10]/XStep 10/YStep 10/Resources<<>>",
+            b"/Pattern cs /P0 scn 0 0 10 10 re f",
+            b"/Pattern cs /P0 scn 100 100 200 200 re f",
+        ),
+        &PT,
+    );
+    assert!(page.gaps.shadings > 0, "{:?}", page.gaps);
+}
+
 #[cfg(feature = "standard-fonts")]
 #[test]
-fn text_in_a_tiling_pattern_is_reported() {
-    let resources = "/Resources<</Pattern<</P0<</PatternType 1/PaintType 1/TilingType 1\
-                     /BBox[0 0 10 10]/XStep 10/YStep 10/Resources<<>>/Length 0>>>>>>";
+fn text_in_a_tiling_pattern_is_painted_in_its_cells() {
     let page = render(
-        &page_pdf(
-            resources,
-            A4,
+        &tiling_pdf(
+            "/PaintType 1/BBox[0 0 10 10]/XStep 10/YStep 10/Resources<<>>",
+            b"1 0 0 rg 0 0 10 10 re f",
             b"/Pattern cs /P0 scn BT /F1 40 Tf 72 700 Td (Hello) Tj ET",
         ),
         &PT,
     );
-    assert_eq!(page.gaps.shadings, 1, "{:?}", page.gaps);
+    assert!(
+        has_color(&page, 72, 175, 842 - 732, 842 - 700, RED),
+        "the glyphs are red"
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
 
 #[cfg(not(feature = "standard-fonts"))]

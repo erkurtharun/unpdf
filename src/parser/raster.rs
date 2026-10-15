@@ -8,8 +8,8 @@
 
 use tiny_skia::{
     Color, FillRule, FilterQuality, GradientStop, IntSize, LineCap, LineJoin, LinearGradient, Mask,
-    Paint, Path, PathBuilder, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode,
-    Stroke, StrokeDash, Transform,
+    Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader,
+    SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use std::collections::HashMap;
@@ -17,8 +17,9 @@ use std::rc::Rc;
 
 use super::backend::{
     ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue, RawXObject,
-    Shading, ShadingGeometry, Type3Font,
+    Shading, ShadingGeometry, TilingPattern, Type3Font,
 };
+use super::form_xobject;
 use super::png_encode::{self, PngColorType};
 use super::raster_text::LoadedFont;
 use super::text_state::{TextMatrix, TextParams};
@@ -67,14 +68,23 @@ pub struct RasterGaps {
     /// but is in a codec or color space this does not decode is counted in `images`.
     pub inline_images: u32,
     /// Shadings (`sh`) and pattern colors not painted: mesh shadings (types 4–7), function
-    /// shadings (type 1), a PostScript calculator function, and tiling patterns. Axial and
-    /// radial shadings are painted.
+    /// shadings (type 1), a PostScript calculator function, and a tiling pattern nested more
+    /// than three deep. Axial and radial shadings and tiling patterns are painted.
     pub shadings: u32,
     /// Content streams of the page that could not be decoded; whatever they held is missing.
     pub undecodable_content_streams: u32,
 }
 
 impl RasterGaps {
+    /// Count what `other` left unpainted as left unpainted here too.
+    fn absorb(&mut self, other: &RasterGaps) {
+        self.text_runs += other.text_runs;
+        self.images += other.images;
+        self.inline_images += other.inline_images;
+        self.shadings += other.shadings;
+        self.undecodable_content_streams += other.undecodable_content_streams;
+    }
+
     /// Whether anything the page asked for was left unpainted.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
@@ -170,27 +180,9 @@ pub(crate) fn render_page(
         .ok_or_else(|| Error::Render(format!("cannot allocate {px_w} x {px_h} pixels")))?;
     pixmap.fill(tiny_skia::Color::WHITE);
 
-    let painted = super::form_xobject::page_operations(backend, page)?;
-    let mut painter = Painter {
-        backend,
-        page,
-        current_form: None,
-        pixmap,
-        state: GState::new(base),
-        stack: Vec::new(),
-        path: PathBuilder::new(),
-        pending_clip: None,
-        text_matrix: TextMatrix::default(),
-        fonts: HashMap::new(),
-        type3: HashMap::new(),
-        glyph_depth: 0,
-        uncolored_glyph: false,
-        gaps: RasterGaps {
-            undecodable_content_streams: painted.undecodable_streams as u32,
-            ..RasterGaps::default()
-        },
-        substituted_text_runs: 0,
-    };
+    let painted = form_xobject::page_operations(backend, page)?;
+    let mut painter = Painter::new(backend, page, pixmap, base);
+    painter.gaps.undecodable_content_streams = painted.undecodable_streams as u32;
     for op in &painted.ops {
         painter.apply(op);
     }
@@ -227,8 +219,8 @@ enum PaintSpace {
     Rgb,
     Cmyk,
     Indexed(ImageColorSpace),
-    /// A pattern — painting with it is a gap.
-    Pattern,
+    /// A pattern, with the space an uncolored pattern's color is given in.
+    Pattern(Option<Box<PaintSpace>>),
     /// A space this does not convert (`Separation`, `DeviceN`, `Lab`): its components are
     /// read as a tint, 0 white to 1 black.
     Tint(usize),
@@ -259,7 +251,7 @@ impl PaintSpace {
                 let comps: Vec<f32> = entry.iter().map(|&b| f32::from(b) / 255.0).collect();
                 PaintSpace::of_image_space(base).color(&comps)?
             }
-            PaintSpace::Pattern => return None,
+            PaintSpace::Pattern(base) => return base.as_ref()?.color(values),
             PaintSpace::Tint(n) => {
                 let tint = (0..*n).map(v).fold(0.0f32, f32::max);
                 Rgb(1.0 - tint, 1.0 - tint, 1.0 - tint)
@@ -291,11 +283,10 @@ struct GState {
     /// Whether the current fill/stroke color is a pattern.
     fill_pattern: bool,
     stroke_pattern: bool,
-    /// The shading of the current fill/stroke pattern, with the transform from its pattern
-    /// space to device pixels; `None` when the pattern is not a shading this paints (a tiling
-    /// pattern is a gap).
-    fill_shading: Option<Rc<(Shading, Transform)>>,
-    stroke_shading: Option<Rc<(Shading, Transform)>>,
+    /// What the current fill/stroke pattern paints with; `None` when it is a pattern this
+    /// does not paint.
+    fill_pattern_paint: Option<Rc<PatternPaint>>,
+    stroke_pattern_paint: Option<Rc<PatternPaint>>,
     /// The default space of the content being painted → device pixels: what a pattern's
     /// matrix is relative to (ISO 32000-1 §8.7.3.1) — the page's, or, inside a form, the form's
     /// space as it was entered.
@@ -331,8 +322,8 @@ impl GState {
             stroke_alpha: 1.0,
             fill_pattern: false,
             stroke_pattern: false,
-            fill_shading: None,
-            stroke_shading: None,
+            fill_pattern_paint: None,
+            stroke_pattern_paint: None,
             pattern_base: base,
             line_width: 1.0,
             cap: LineCap::Butt,
@@ -368,11 +359,85 @@ struct Painter<'a> {
     type3: HashMap<FontResource, Option<Rc<Type3Font>>>,
     /// How many Type 3 glyph procedures are running, one inside another.
     glyph_depth: usize,
-    /// Inside a glyph procedure that began with `d1`: the glyph is a shape painted in the
-    /// color current where the text is shown, so its own color operators are ignored.
-    uncolored_glyph: bool,
+    /// How many tiling pattern cells are being painted, one inside another: this painter's.
+    pattern_depth: usize,
+    /// Tiling pattern cells rendered so far, by where and in what color they are painted.
+    tiles: HashMap<TileKey, Option<Rc<PatternPaint>>>,
+    /// Painting a shape that takes its color from outside: a Type 3 glyph procedure that
+    /// began with `d1`, or the cell of an uncolored tiling pattern. Its own color operators
+    /// are ignored.
+    uncolored: bool,
     gaps: RasterGaps,
     substituted_text_runs: u32,
+}
+
+/// A tiling pattern cell as painted: the content it was named from (form and name), its
+/// pattern space → device pixels, and the color of an uncolored one -- as bits, to be a key.
+type TileKey = (Option<ObjectId>, Vec<u8>, [u32; 6], [u32; 3]);
+
+/// What a pattern color paints with, placed on the device.
+enum PatternPaint {
+    /// A shading pattern: its shading, and pattern space → device pixels.
+    Shading(Shading, Transform),
+    /// A tiling pattern: one cell, rendered, and its pixels → device pixels. The cell repeats.
+    Tile(Pixmap, Transform),
+}
+
+/// The paint for one drawing operation. It owns what it paints with, so drawing with it does
+/// not hold the painter borrowed.
+enum PaintSource {
+    Ready(Paint<'static>),
+    /// A tiling pattern's cell, with its pixels → the space the drawing is in.
+    Tile(Rc<PatternPaint>, Transform, f32),
+}
+
+impl PaintSource {
+    fn paint(&self) -> Paint<'_> {
+        match self {
+            PaintSource::Ready(paint) => paint.clone(),
+            PaintSource::Tile(tile, transform, alpha) => {
+                let PatternPaint::Tile(pixmap, _) = &**tile else {
+                    unreachable!("a tile source holds a tile");
+                };
+                Paint {
+                    shader: Pattern::new(
+                        pixmap.as_ref(),
+                        SpreadMode::Repeat,
+                        FilterQuality::Bilinear,
+                        alpha.clamp(0.0, 1.0),
+                        *transform,
+                    ),
+                    anti_alias: true,
+                    ..Paint::default()
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Painter<'a> {
+    /// A painter for `page` drawing into `pixmap`, user space placed on it by `base`.
+    fn new(backend: &'a dyn PdfBackend, page: PageId, pixmap: Pixmap, base: Transform) -> Self {
+        Painter {
+            backend,
+            page,
+            current_form: None,
+            pixmap,
+            state: GState::new(base),
+            stack: Vec::new(),
+            path: PathBuilder::new(),
+            pending_clip: None,
+            text_matrix: TextMatrix::default(),
+            fonts: HashMap::new(),
+            type3: HashMap::new(),
+            glyph_depth: 0,
+            pattern_depth: 0,
+            tiles: HashMap::new(),
+            uncolored: false,
+            gaps: RasterGaps::default(),
+            substituted_text_runs: 0,
+        }
+    }
 }
 
 fn number(v: &PdfValue) -> Option<f32> {
@@ -392,8 +457,9 @@ impl Painter<'_> {
             self.current_form = op.form;
             self.state.pattern_base = self.state.ctm;
         }
-        // An uncolored glyph's procedure sets no color of its own (ISO 32000-1 §9.6.5).
-        if self.uncolored_glyph
+        // An uncolored glyph's procedure, or an uncolored pattern's cell, sets no color of its
+        // own (ISO 32000-1 §9.6.5, §8.7.3.3).
+        if self.uncolored
             && matches!(
                 op.operator.as_str(),
                 "g" | "G" | "rg" | "RG" | "k" | "K" | "cs" | "CS" | "sc" | "scn" | "SC" | "SCN"
@@ -491,7 +557,7 @@ impl Painter<'_> {
                     PaintSpace::Cmyk => vec![0.0, 0.0, 0.0, 1.0],
                     PaintSpace::Gray | PaintSpace::Tint(_) | PaintSpace::Indexed(_) => vec![0.0],
                     PaintSpace::Rgb => vec![0.0, 0.0, 0.0],
-                    PaintSpace::Pattern => Vec::new(),
+                    PaintSpace::Pattern(_) => Vec::new(),
                 };
                 if op.operator == "cs" {
                     self.set_fill(space, &initial);
@@ -509,14 +575,14 @@ impl Painter<'_> {
                 let space = self.state.fill_space.clone();
                 self.set_fill(space, &all());
                 if self.state.fill_pattern {
-                    self.state.fill_shading = self.pattern_shading(op);
+                    self.state.fill_pattern_paint = self.pattern_named(op, self.state.fill);
                 }
             }
             "SC" | "SCN" => {
                 let space = self.state.stroke_space.clone();
                 self.set_stroke(space, &all());
                 if self.state.stroke_pattern {
-                    self.state.stroke_shading = self.pattern_shading(op);
+                    self.state.stroke_pattern_paint = self.pattern_named(op, self.state.stroke);
                 }
             }
 
@@ -603,7 +669,7 @@ impl Painter<'_> {
                 }
             }
             // Type 3 glyph metrics: `d1` marks the glyph uncolored.
-            "d1" if self.glyph_depth > 0 => self.uncolored_glyph = true,
+            "d1" if self.glyph_depth > 0 => self.uncolored = true,
             "sh" => {
                 let shading = match op.operands.first() {
                     Some(PdfValue::Name(name)) => self.backend.shading(op.scope(self.page), name),
@@ -751,7 +817,7 @@ impl Painter<'_> {
         if missing {
             self.gaps.text_runs += 1;
         }
-        // Text in a pattern this does not paint (a tiling pattern), once per run.
+        // Text in a pattern this does not paint, once per run.
         if unpainted_color {
             self.gaps.shadings += 1;
         }
@@ -847,7 +913,7 @@ impl Painter<'_> {
         let saved_clip = self.pending_clip.take();
         let saved_text = self.text_matrix.clone();
         let saved_form = self.current_form;
-        let saved_uncolored = std::mem::replace(&mut self.uncolored_glyph, false);
+        let saved_uncolored = std::mem::replace(&mut self.uncolored, false);
         self.state.ctm = glyph_space;
         self.glyph_depth += 1;
         for op in ops {
@@ -860,7 +926,7 @@ impl Painter<'_> {
         self.pending_clip = saved_clip;
         self.text_matrix = saved_text;
         self.current_form = saved_form;
-        self.uncolored_glyph = saved_uncolored;
+        self.uncolored = saved_uncolored;
     }
 
     /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both). `false` when
@@ -871,9 +937,9 @@ impl Painter<'_> {
         let mut painted = true;
         if fill {
             match self.current_paint(false, transform) {
-                Some(paint) => self.pixmap.fill_path(
+                Some(source) => self.pixmap.fill_path(
                     outline,
-                    &paint,
+                    &source.paint(),
                     FillRule::Winding,
                     transform,
                     self.state.clip.as_ref(),
@@ -884,9 +950,10 @@ impl Painter<'_> {
         if stroke {
             // The line width is in user space; the glyph path is in glyph space. Stroke in
             // device space with the width the CTM gives it.
-            let Some(paint) = self.current_paint(true, Transform::identity()) else {
+            let Some(source) = self.current_paint(true, Transform::identity()) else {
                 return false;
             };
+            let paint = source.paint();
             if let Some(device) = outline.clone().transform(transform) {
                 let width = self.state.line_width * transform_scale(&self.state.ctm);
                 let stroke = Stroke {
@@ -906,11 +973,14 @@ impl Painter<'_> {
     }
 
     fn space_named(&self, op: &ContentOp, name: &[u8]) -> PaintSpace {
+        if let Some(base) = self.backend.named_pattern_space(op.scope(self.page), name) {
+            return PaintSpace::Pattern(base.map(|b| Box::new(PaintSpace::of_image_space(&b))));
+        }
         match name {
             b"DeviceGray" | b"G" | b"CalGray" => PaintSpace::Gray,
             b"DeviceRGB" | b"RGB" | b"CalRGB" => PaintSpace::Rgb,
             b"DeviceCMYK" | b"CMYK" => PaintSpace::Cmyk,
-            b"Pattern" => PaintSpace::Pattern,
+            b"Pattern" => PaintSpace::Pattern(None),
             _ => match self.backend.named_color_space(op.scope(self.page), name) {
                 Some(space) => PaintSpace::of_image_space(&space),
                 // `Separation`, `DeviceN`, `Lab`, or a `Pattern` space with a base: read as
@@ -921,8 +991,8 @@ impl Painter<'_> {
     }
 
     fn set_fill(&mut self, space: PaintSpace, values: &[f32]) {
-        self.state.fill_pattern = space == PaintSpace::Pattern;
-        self.state.fill_shading = None;
+        self.state.fill_pattern = matches!(space, PaintSpace::Pattern(_));
+        self.state.fill_pattern_paint = None;
         if let Some(color) = space.color(values) {
             self.state.fill = color;
         }
@@ -930,8 +1000,8 @@ impl Painter<'_> {
     }
 
     fn set_stroke(&mut self, space: PaintSpace, values: &[f32]) {
-        self.state.stroke_pattern = space == PaintSpace::Pattern;
-        self.state.stroke_shading = None;
+        self.state.stroke_pattern = matches!(space, PaintSpace::Pattern(_));
+        self.state.stroke_pattern_paint = None;
         if let Some(color) = space.color(values) {
             self.state.stroke = color;
         }
@@ -949,9 +1019,9 @@ impl Painter<'_> {
         if let Some(path) = &path {
             if let Some(rule) = fill {
                 match self.current_paint(false, self.state.ctm) {
-                    Some(paint) => self.pixmap.fill_path(
+                    Some(source) => self.pixmap.fill_path(
                         path,
-                        &paint,
+                        &source.paint(),
                         rule,
                         self.state.ctm,
                         self.state.clip.as_ref(),
@@ -961,7 +1031,7 @@ impl Painter<'_> {
             }
             if stroke {
                 match self.current_paint(true, self.state.ctm) {
-                    Some(paint) => self.stroke(path, &paint),
+                    Some(source) => self.stroke(path, &source.paint()),
                     None => self.gaps.shadings += 1,
                 }
             }
@@ -971,55 +1041,148 @@ impl Painter<'_> {
         }
     }
 
-    /// The shading of the pattern `scn`/`SCN` names (its last operand), placed by its matrix
-    /// relative to the default space of the content being painted.
-    fn pattern_shading(&self, op: &ContentOp) -> Option<Rc<(Shading, Transform)>> {
+    /// What the pattern `scn`/`SCN` names (its last operand) paints with, placed by its matrix
+    /// relative to the default space of the content being painted. `color` is the color given
+    /// with it, which an uncolored tiling pattern paints in.
+    fn pattern_named(&mut self, op: &ContentOp, color: Rgb) -> Option<Rc<PatternPaint>> {
         let Some(PdfValue::Name(name)) = op.operands.last() else {
             return None;
         };
-        let (shading, [a, b, c, d, e, f]) =
-            self.backend.shading_pattern(op.scope(self.page), name)?;
-        let transform = self
-            .state
-            .pattern_base
-            .pre_concat(Transform::from_row(a, b, c, d, e, f));
-        Some(Rc::new((shading, transform)))
+        let scope = op.scope(self.page);
+        let place = |[a, b, c, d, e, f]: [f32; 6]| {
+            self.state
+                .pattern_base
+                .pre_concat(Transform::from_row(a, b, c, d, e, f))
+        };
+        if let Some((shading, matrix)) = self.backend.shading_pattern(scope, name) {
+            return Some(Rc::new(PatternPaint::Shading(shading, place(matrix))));
+        }
+        let pattern = self.backend.tiling_pattern(scope, name)?;
+        let to_device = place(pattern.matrix);
+        let t = to_device;
+        let key = (
+            op.form,
+            name.clone(),
+            [t.sx, t.ky, t.kx, t.sy, t.tx, t.ty].map(f32::to_bits),
+            [color.0, color.1, color.2].map(f32::to_bits),
+        );
+        if let Some(tile) = self.tiles.get(&key) {
+            return tile.clone();
+        }
+        let tile = self
+            .render_tile(&pattern, to_device, color)
+            .map(|(pixmap, to_device)| Rc::new(PatternPaint::Tile(pixmap, to_device)));
+        self.tiles.insert(key, tile.clone());
+        tile
     }
 
-    /// A pattern's shading as a paint for a path drawn with `path_transform` (the CTM for a
-    /// path, the glyph's transform for a glyph). That transform applies to the shader too, so
-    /// the shader is placed by its inverse followed by the pattern's own transform to device
-    /// pixels.
-    fn pattern_paint(
-        shading: &Shading,
+    /// Paint one cell of a tiling pattern into a pixmap of its own, at the resolution the
+    /// device shows it with, and say how its pixels land on the device.
+    ///
+    /// The cell is `x_step` by `y_step` from the `/BBox`'s lower left corner, clipped to the
+    /// `/BBox`, as pdf.js paints it: what a cell paints past its step is cut off rather than
+    /// overlapping the next. The cell's resolution is capped, as pdf.js caps it (3000 pixels a
+    /// side); a coarser cell is still repeated at its exact step.
+    fn render_tile(
+        &mut self,
+        pattern: &TilingPattern,
         to_device: Transform,
-        alpha: f32,
-        path_transform: Transform,
-    ) -> Option<Paint<'static>> {
-        let to_path = path_transform.invert()?.pre_concat(to_device);
-        shading_paint(shading, to_path, alpha)
+        color: Rgb,
+    ) -> Option<(Pixmap, Transform)> {
+        const MAX_PATTERN_DEPTH: usize = 3;
+        const MAX_TILE_SIDE: f32 = 3000.0;
+        if self.pattern_depth >= MAX_PATTERN_DEPTH {
+            return None;
+        }
+        let Some(ops) = &pattern.ops else {
+            self.gaps.undecodable_content_streams += 1;
+            return None;
+        };
+        let (x_step, y_step) = (pattern.x_step.abs(), pattern.y_step.abs());
+        if !(x_step.is_finite() && y_step.is_finite() && x_step > 0.0 && y_step > 0.0) {
+            return None;
+        }
+        // Device pixels per pattern unit along each axis of pattern space.
+        let along_x = to_device.sx.hypot(to_device.ky);
+        let along_y = to_device.kx.hypot(to_device.sy);
+        let side = |len: f32| {
+            if len.is_finite() {
+                len.ceil().clamp(1.0, MAX_TILE_SIDE)
+            } else {
+                1.0
+            }
+        };
+        let (w, h) = (side(x_step * along_x), side(y_step * along_y));
+        // The cell's pixels: pattern space scaled to fill them exactly, y down.
+        let (kx, ky) = (w / x_step, h / y_step);
+        let (x0, y0) = (pattern.bbox.llx, pattern.bbox.lly);
+        let cell = Transform::from_row(kx, 0.0, 0.0, -ky, -x0 * kx, (y0 + y_step) * ky);
+        let tile_to_device = to_device.pre_concat(cell.invert()?);
+
+        let pixmap = Pixmap::new(w as u32, h as u32)?;
+        let mut tile = Painter::new(self.backend, self.page, pixmap, cell);
+        tile.current_form = Some(pattern.id);
+        tile.pattern_depth = self.pattern_depth + 1;
+        tile.glyph_depth = self.glyph_depth;
+        if pattern.uncolored {
+            tile.uncolored = true;
+            tile.state.fill = color;
+            tile.state.stroke = color;
+        }
+        // The cell clips what it paints (ISO 32000-1 §8.7.3.3).
+        let b = &pattern.bbox;
+        let bbox = Rect::from_ltrb(
+            b.llx.min(b.urx),
+            b.lly.min(b.ury),
+            b.llx.max(b.urx),
+            b.lly.max(b.ury),
+        );
+        if let Some(bbox) = bbox {
+            tile.clip(Some(&PathBuilder::from_rect(bbox)), FillRule::Winding);
+        }
+        let cell_ops = form_xobject::content_operations(self.backend, self.page, ops, pattern.id);
+        tile.gaps.undecodable_content_streams += cell_ops.undecodable_streams as u32;
+        for op in &cell_ops.ops {
+            tile.apply(op);
+        }
+        self.gaps.absorb(&tile.gaps);
+        self.substituted_text_runs += tile.substituted_text_runs;
+        Some((tile.pixmap, tile_to_device))
     }
 
     /// The paint for filling (`stroke` false) or stroking with the current color, drawn with
-    /// `path_transform`. `None` when the color is a pattern this does not paint.
-    fn current_paint(&self, stroke: bool, path_transform: Transform) -> Option<Paint<'static>> {
-        let (pattern, shading, color, alpha) = if stroke {
-            let s = &self.state;
+    /// `path_transform` (the CTM for a path, the glyph's transform for a glyph). That transform
+    /// applies to a pattern's shader too, so the shader is placed by its inverse followed by
+    /// the pattern's own placement on the device. `None` when the color is a pattern this does
+    /// not paint.
+    fn current_paint(&self, stroke: bool, path_transform: Transform) -> Option<PaintSource> {
+        let s = &self.state;
+        let (pattern, pattern_paint, color, alpha) = if stroke {
             (
                 s.stroke_pattern,
-                &s.stroke_shading,
+                &s.stroke_pattern_paint,
                 s.stroke,
                 s.stroke_alpha,
             )
         } else {
-            let s = &self.state;
-            (s.fill_pattern, &s.fill_shading, s.fill, s.fill_alpha)
+            (s.fill_pattern, &s.fill_pattern_paint, s.fill, s.fill_alpha)
         };
         if !pattern {
-            return Some(solid(color, alpha));
+            return Some(PaintSource::Ready(solid(color, alpha)));
         }
-        let (shading, to_device) = shading.as_deref()?;
-        Self::pattern_paint(shading, *to_device, alpha, path_transform)
+        let pattern_paint = pattern_paint.as_ref()?;
+        let to_path = path_transform.invert()?;
+        match &**pattern_paint {
+            PatternPaint::Shading(shading, to_device) => {
+                shading_paint(shading, to_path.pre_concat(*to_device), alpha)
+                    .map(PaintSource::Ready)
+            }
+            PatternPaint::Tile(_, to_device) => Some(PaintSource::Tile(
+                pattern_paint.clone(),
+                to_path.pre_concat(*to_device),
+                alpha,
+            )),
+        }
     }
 
     /// `sh`: paint a shading over the clip — or over its `/BBox` — in the current user space,

@@ -15,7 +15,16 @@
   (axial) or type 3 (radial) shading is now painted, its colors from a sampled, exponential or
   stitching function (or an array of them), with `/Extend`, `/BBox` and the pattern's
   `/Matrix` (relative to the page's space, or the form's for a pattern a form uses). `gaps.shadings` now counts what is still not painted: mesh and function-based
-  shadings, a PostScript calculator function, and tiling patterns.
+  shadings, and a PostScript calculator function.
+- **Tiling patterns are painted.** A fill, stroke or text in a tiling pattern
+  (`/PatternType 1`) was left out and counted in `gaps.shadings`; the pattern's cell is now
+  painted once at the resolution the page shows it with -- its content stream with the names
+  it uses resolved in the pattern's `/Resources`, clipped to its `/BBox` -- and repeated at
+  `/XStep`/`/YStep`, placed by its `/Matrix`. An uncolored pattern (`/PaintType 2`) paints its
+  cell in the color given with it, in the base space of its `[/Pattern base]` color space,
+  which was read as a tint before. As pdf.js does, what a cell paints past its step is cut off
+  and a cell is at most 3000 pixels a side. A pattern nested more than three deep in its own
+  cells is counted in `gaps.shadings`.
 - **Inline images are painted.** A page's `BI … ID … EI` image was skipped by the renderer
   and counted in `gaps.inline_images`; it is now read like an image XObject -- the
   abbreviated keys (`W`, `H`, `BPC`, `CS`, `F`, `DP`, `D`, `IM`) and filter names, a named
@@ -29,7 +38,7 @@
 - **Text in a pattern color is painted, or reported.** A glyph filled or stroked with a pattern
   was left out of a rendered page without being counted anywhere. Text in a shading pattern is
   now painted in the pattern's colors, placed as for a path; text in a pattern this does not
-  paint (a tiling pattern) is counted in `gaps.shadings`, once per text run.
+  paint is counted in `gaps.shadings`, once per text run.
 - **An image no longer decodes to many times its stream's size.** A sample stream is bounded,
   but a pixel costs more than a sample -- a 1-bit palette image becomes 24 bits of RGB, and 32
   of RGBA when a page is rendered -- so an image within the stream limit could still ask for
