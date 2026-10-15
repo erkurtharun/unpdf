@@ -50,6 +50,13 @@
 
 ### Fixed
 
+- **A transparency group is painted with the alpha it is drawn with.** A Form XObject with
+  `/Group <</S /Transparency>>` was painted as if its content were the page's, so an alpha the
+  group set inside itself undid the one it was drawn with -- a full-page photo placed at 10%
+  opacity, whose form resets the alpha to 1, came out at full strength over the text. A group
+  drawn with an alpha below 1 is now painted on a layer of its own and composited with that
+  alpha (ISO 32000-1 §11.6.6), as MuPDF and pdf.js paint it; inside, the alpha starts at 1.
+  Blend modes and soft masks are still not applied.
 - **Text in a pattern color is painted, or reported.** A glyph filled or stroked with a pattern
   was left out of a rendered page without being counted anywhere. Text in a shading pattern is
   now painted in the pattern's colors, placed as for a path; text in a pattern this does not

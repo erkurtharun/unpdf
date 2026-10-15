@@ -24,6 +24,12 @@ use super::backend::{
 };
 use crate::error::Result;
 
+/// Pseudo-operators around a transparency group's content: everything between them is one
+/// group, composited as a whole where it is painted. Never a real operator -- an operator in
+/// a content stream is a run of letters and digits.
+pub(crate) const BEGIN_GROUP: &str = "{group";
+pub(crate) const END_GROUP: &str = "}group";
+
 /// A page's operators, with the Form XObjects it paints interpreted in place.
 pub(crate) struct PageOperations {
     pub ops: Vec<ContentOp>,
@@ -164,9 +170,19 @@ impl Expander<'_> {
             }
         }
 
+        if painted.transparency_group {
+            let mut begin = ContentOp::new(BEGIN_GROUP, Vec::new());
+            begin.form = outer;
+            self.out.push(begin);
+        }
         self.path.push(painted.id);
         self.paint(&ops, Some(painted.id));
         self.path.pop();
+        if painted.transparency_group {
+            let mut end = ContentOp::new(END_GROUP, Vec::new());
+            end.form = outer;
+            self.out.push(end);
+        }
 
         let mut restore = ContentOp::new("Q", Vec::new());
         restore.form = outer;

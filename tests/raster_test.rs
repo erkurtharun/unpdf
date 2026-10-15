@@ -574,6 +574,46 @@ fn a_ccitt_image_that_does_not_decode_is_reported() {
     assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
 }
 
+/// A page that sets the fill alpha to 0.5 (`/Half`) and paints the form `/Fm`, whose content
+/// sets its own alpha back to 1 (`/Opaque`) and fills x 100..300, y 100..300 red. `group` is
+/// the form's `/Group` entry, if any.
+fn group_page(group: &str) -> Vec<u8> {
+    let content = b"/Opaque gs 1 0 0 rg 100 100 200 200 re f";
+    assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Resources<</XObject<</Fm 5 0 R>>\
+             /ExtGState<</Half<</ca 0.5>>>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object("<</Length 13>>", b"/Half gs /Fm Do"),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]{group}\
+                  /Resources<</ExtGState<</Opaque<</ca 1>>>>>>/Length {}>>",
+                content.len()
+            ),
+            content,
+        ),
+    ])
+}
+
+#[test]
+fn a_transparency_group_is_composited_with_the_alpha_it_is_painted_with() {
+    // The alpha inside the group does not undo the one the group is painted with: half red.
+    let page = render(&group_page("/Group<</S/Transparency>>"), &PT);
+    let got = px(&page, 200, 842 - 200);
+    assert!(near(got, [255, 128, 128]), "{got:?}");
+}
+
+#[test]
+fn a_form_that_is_not_a_group_paints_with_the_alpha_its_content_sets() {
+    let page = render(&group_page(""), &PT);
+    let got = px(&page, 200, 842 - 200);
+    assert!(near(got, RED), "{got:?}");
+}
+
 /// A 16 x 8 JBIG2 page (an immediate generic region, MMR-coded), white on the left half and
 /// black on the right, as MuPDF renders it.
 const JBIG2_HALVES: &[u8] = include_bytes!("fixtures/halves_white_black_16x8.jb2");

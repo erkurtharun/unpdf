@@ -186,6 +186,7 @@ pub(crate) fn render_page(
     for op in &painted.ops {
         painter.apply(op);
     }
+    painter.end_groups();
 
     let Painter {
         pixmap,
@@ -363,6 +364,10 @@ struct Painter<'a> {
     pattern_depth: usize,
     /// Tiling pattern cells rendered so far, by where and in what color they are painted.
     tiles: HashMap<TileKey, Option<Rc<PatternPaint>>>,
+    /// The transparency groups being painted, innermost last: for one painted on a layer of
+    /// its own, the pixmap underneath it and the alpha it is composited with; `None` for one
+    /// painted in place.
+    groups: Vec<Option<(Pixmap, f32)>>,
     /// Painting a shape that takes its color from outside: a Type 3 glyph procedure that
     /// began with `d1`, or the cell of an uncolored tiling pattern. Its own color operators
     /// are ignored.
@@ -433,6 +438,7 @@ impl<'a> Painter<'a> {
             glyph_depth: 0,
             pattern_depth: 0,
             tiles: HashMap::new(),
+            groups: Vec::new(),
             uncolored: false,
             gaps: RasterGaps::default(),
             substituted_text_runs: 0,
@@ -668,6 +674,8 @@ impl Painter<'_> {
                     None => self.gaps.inline_images += 1,
                 }
             }
+            form_xobject::BEGIN_GROUP => self.begin_group(),
+            form_xobject::END_GROUP => self.end_group(),
             // Type 3 glyph metrics: `d1` marks the glyph uncolored.
             "d1" if self.glyph_depth > 0 => self.uncolored = true,
             "sh" => {
@@ -929,6 +937,56 @@ impl Painter<'_> {
         self.uncolored = saved_uncolored;
     }
 
+    /// A transparency group begins (ISO 32000-1 §11.6.6). A group painted with an alpha below
+    /// one goes on a layer of its own, which is composited with that alpha when it ends -- so
+    /// overlapping things inside it do not show through one another, and an alpha the group
+    /// sets inside itself does not undo the one it is painted with. Inside, the alpha starts
+    /// at one. A fully opaque group is painted in place, which is the same picture; so is one
+    /// nested past `MAX_GROUP_LAYERS`, to bound the memory layers take.
+    fn begin_group(&mut self) {
+        const MAX_GROUP_LAYERS: usize = 4;
+        let alpha = self.state.fill_alpha;
+        let layered = self.groups.iter().filter(|g| g.is_some()).count();
+        let layer = (alpha < 1.0 && layered < MAX_GROUP_LAYERS)
+            .then(|| Pixmap::new(self.pixmap.width(), self.pixmap.height()))
+            .flatten();
+        match layer {
+            Some(layer) => {
+                let under = std::mem::replace(&mut self.pixmap, layer);
+                self.groups.push(Some((under, alpha)));
+                self.state.fill_alpha = 1.0;
+                self.state.stroke_alpha = 1.0;
+            }
+            None => self.groups.push(None),
+        }
+    }
+
+    /// The innermost transparency group ends: its layer, if it has one, is composited onto
+    /// what is underneath with the group's alpha.
+    fn end_group(&mut self) {
+        if let Some(Some((under, alpha))) = self.groups.pop() {
+            let group = std::mem::replace(&mut self.pixmap, under);
+            self.pixmap.draw_pixmap(
+                0,
+                0,
+                group.as_ref(),
+                &PixmapPaint {
+                    opacity: alpha,
+                    ..PixmapPaint::default()
+                },
+                Transform::identity(),
+                None,
+            );
+        }
+    }
+
+    /// End every group still open, as the content's end ends them.
+    fn end_groups(&mut self) {
+        while !self.groups.is_empty() {
+            self.end_group();
+        }
+    }
+
     /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both). `false` when
     /// part of it was not painted: its color is a pattern this does not paint.
     fn paint_glyph(&mut self, outline: &Path, transform: Transform, mode: i64) -> bool {
@@ -1145,6 +1203,7 @@ impl Painter<'_> {
         for op in &cell_ops.ops {
             tile.apply(op);
         }
+        tile.end_groups();
         self.gaps.absorb(&tile.gaps);
         self.substituted_text_runs += tile.substituted_text_runs;
         Some((tile.pixmap, tile_to_device))

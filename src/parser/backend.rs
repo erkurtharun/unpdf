@@ -178,6 +178,10 @@ pub struct FormXObject {
     pub bbox: Option<PageBox>,
     /// The decoded content stream, or `None` when it could not be decoded.
     pub content: Option<Vec<u8>>,
+    /// Whether the form is a transparency group (`/Group` with `/S /Transparency`, ISO 32000-1
+    /// §11.6.6): its content is composited as a whole, and the alpha in effect where it is
+    /// painted applies to that whole rather than to each thing inside it.
+    pub transparency_group: bool,
 }
 
 /// Raw metadata from the PDF backend.
@@ -1107,6 +1111,11 @@ impl PdfBackend for RawBackend {
                 bbox: raw_dict_get(&stream.dict, b"BBox")
                     .and_then(|b| page_box_from_array(&self.doc, b)),
                 content: raw_stream::decompress(stream).ok(),
+                transparency_group: raw_dict_get(&stream.dict, b"Group")
+                    .and_then(|g| raw_resolve_dict(&self.doc, g))
+                    .and_then(|g| raw_dict_get(g, b"S"))
+                    .and_then(|s| self.doc.resolve(s).as_name())
+                    .is_some_and(|s| s == b"Transparency"),
             }),
             Some(b"Image") => PaintedXObject::Image,
             _ => PaintedXObject::Other,
