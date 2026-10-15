@@ -60,7 +60,8 @@ pub struct RasterGaps {
     /// Images not painted: a codec this does not decode (JPEG 2000, JBIG2, CCITT), a color
     /// space it does not convert, or data that did not decode.
     pub images: u32,
-    /// Inline images (`BI … EI`) not painted.
+    /// Inline images (`BI … EI`) not painted: a dictionary that does not read. One that reads
+    /// but is in a codec or color space this does not decode is counted in `images`.
     pub inline_images: u32,
     /// Shadings (`sh`, or a shading pattern used as a color) not painted.
     pub shadings: u32,
@@ -534,7 +535,18 @@ impl Painter<'_> {
                     }
                 }
             }
-            "BI" => self.gaps.inline_images += 1,
+            "BI" => {
+                let image = match op.operands.first() {
+                    Some(PdfValue::Str(body)) => {
+                        self.backend.inline_image(op.scope(self.page), body)
+                    }
+                    _ => None,
+                };
+                match image {
+                    Some(image) => self.draw_image(&image),
+                    None => self.gaps.inline_images += 1,
+                }
+            }
             "sh" => self.gaps.shadings += 1,
 
             // Text: the state and position were applied above; `'` and `"` have moved to

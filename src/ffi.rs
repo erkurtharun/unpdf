@@ -1129,7 +1129,7 @@ struct FfiRasterOptions {
 /// The page is painted from the content interpretation the document was parsed with, by
 /// the parser the handle keeps — the same page, and no second read of the file. What the
 /// rasterizer cannot paint yet (text in fonts that are not embedded or are Type 3,
-/// some image codecs, inline images, shadings) is left out and counted in `out_info`; the
+/// some image codecs, shadings) is left out and counted in `out_info`; the
 /// rest of the page is painted.
 ///
 /// `options_json`: null, or `{"dpi": 150, "region": "crop" | "media"}` — resolution in dots

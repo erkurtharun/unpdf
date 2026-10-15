@@ -127,6 +127,81 @@ fn a_full_page_image_covers_the_page() {
 }
 
 #[test]
+fn an_inline_image_is_painted_and_the_content_after_it_still_is() {
+    // 2 x 1 RGB, red then blue, written raw between `ID` and `EI`; a green square after it.
+    let mut content = b"q 200 0 0 100 50 50 cm BI /W 2 /H 1 /CS /RGB /BPC 8 ID ".to_vec();
+    content.extend_from_slice(&[0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF]);
+    content.extend_from_slice(b"\nEI Q 0 1 0 rg 400 400 50 50 re f");
+    let page = render(&page_pdf("", A4, &content), &PT);
+    assert!(
+        near(px(&page, 100, 842 - 100), RED),
+        "{:?}",
+        px(&page, 100, 742)
+    );
+    assert!(
+        near(px(&page, 200, 842 - 100), [0, 0, 255]),
+        "{:?}",
+        px(&page, 200, 742)
+    );
+    assert!(near(px(&page, 425, 842 - 425), [0, 255, 0]));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_inline_image_reads_abbreviated_filters_and_a_dictionary_ending_against_id() {
+    // One gray 0x80 pixel, hex-encoded; the dictionary's last value ends in `]`, right
+    // against `ID`.
+    let page = render(
+        &page_pdf(
+            "",
+            A4,
+            b"q 100 0 0 100 0 0 cm BI /W 1 /H 1 /CS /G /BPC 8 /F [/AHx]ID 80> EI Q",
+        ),
+        &PT,
+    );
+    assert!(
+        near(px(&page, 50, 842 - 50), [128, 128, 128]),
+        "{:?}",
+        px(&page, 50, 792)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_inline_stencil_mask_paints_the_fill_color() {
+    // 2 x 1 stencil: the left bit (0) marks.
+    let mut content = b"1 0 0 rg q 200 0 0 100 50 50 cm BI /W 2 /H 1 /IM true ID ".to_vec();
+    content.push(0b0100_0000);
+    content.extend_from_slice(b" EI Q");
+    let page = render(&page_pdf("", A4, &content), &PT);
+    assert!(
+        near(px(&page, 100, 842 - 100), RED),
+        "{:?}",
+        px(&page, 100, 742)
+    );
+    assert!(
+        near(px(&page, 200, 842 - 100), WHITE),
+        "{:?}",
+        px(&page, 200, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_inline_image_that_does_not_read_is_reported() {
+    let page = render(
+        &page_pdf("", A4, b"BI /W 1 /H 1 /CS /Unknown /BPC 8 ID x EI"),
+        &PT,
+    );
+    assert_eq!(
+        page.gaps.images + page.gaps.inline_images,
+        1,
+        "{:?}",
+        page.gaps
+    );
+}
+
+#[test]
 fn a_jpeg_image_is_decoded() {
     let jpeg = include_bytes!("fixtures/solid_red_4x2.jpg");
     let image = stream_object(

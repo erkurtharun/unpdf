@@ -585,6 +585,13 @@ pub trait PdfBackend: Send + Sync {
         None
     }
 
+    /// The inline image whose `BI` operator carries `body` (its dictionary, `ID` and data),
+    /// decoded as far as its filters go — what a rasterizer paints for `BI`. A named color
+    /// space resolves in `scope`. `None` when the body is not one this reads.
+    fn inline_image(&self, _scope: ResourceScope, _body: &[u8]) -> Option<RawXObject> {
+        None
+    }
+
     /// The `/ExtGState` resource `name` refers to in `scope`.
     fn ext_gstate(&self, _scope: ResourceScope, _name: &[u8]) -> Option<ExtGState> {
         None
@@ -972,6 +979,24 @@ impl PdfBackend for RawBackend {
         Some(self.read_image(stream, String::from_utf8_lossy(name).into_owned(), 0))
     }
 
+    fn inline_image(&self, scope: ResourceScope, body: &[u8]) -> Option<RawXObject> {
+        let (dict, data) = inline_image_parts(body)?;
+        let stream = super::raw::tokenizer::PdfStream {
+            dict,
+            raw_data: data.to_vec(),
+        };
+        // An inline image has no soft mask (§8.9.7): read it as one already nested.
+        let mut image = self.read_image(&stream, "inline".to_string(), 1);
+        // A space by name other than the device ones is a `/ColorSpace` resource.
+        if image.color.is_none() {
+            if let Some(name) = raw_dict_get(&stream.dict, b"ColorSpace").and_then(|v| v.as_name())
+            {
+                image.color = self.named_color_space(scope, name);
+            }
+        }
+        Some(image)
+    }
+
     fn ext_gstate(&self, scope: ResourceScope, name: &[u8]) -> Option<ExtGState> {
         let dict = resource_chain(&self.doc, scope)
             .into_iter()
@@ -1007,6 +1032,63 @@ impl PdfBackend for RawBackend {
     fn acroform_fields(&self) -> Vec<FormField> {
         self.extract_acroform_fields()
     }
+}
+
+/// The full key each abbreviation an inline image's dictionary may use stands for
+/// (ISO 32000-1 Table 93).
+const INLINE_IMAGE_KEYS: &[(&[u8], &[u8])] = &[
+    (b"BPC", b"BitsPerComponent"),
+    (b"CS", b"ColorSpace"),
+    (b"D", b"Decode"),
+    (b"DP", b"DecodeParms"),
+    (b"F", b"Filter"),
+    (b"H", b"Height"),
+    (b"IM", b"ImageMask"),
+    (b"I", b"Interpolate"),
+    (b"L", b"Length"),
+    (b"W", b"Width"),
+];
+
+/// An inline image's body split into its dictionary, keys written out in full, and its data:
+/// the bytes after `ID` and the one whitespace byte that ends it, without the whitespace
+/// before `EI`. `None` when the dictionary does not parse or `ID` is missing.
+fn inline_image_parts(body: &[u8]) -> Option<(RawPdfDict, &[u8])> {
+    use super::raw::tokenizer::parse_object;
+    let mut dict = RawPdfDict::new();
+    let mut pos = 0;
+    loop {
+        while pos < body.len() && is_pdf_whitespace(body[pos]) {
+            pos += 1;
+        }
+        if body[pos..].starts_with(b"ID") {
+            pos += 2;
+            break;
+        }
+        let (key, after_key) = parse_object(body, pos).ok()?;
+        let RawPdfObject::Name(key) = key else {
+            return None;
+        };
+        let (value, after_value) = parse_object(body, after_key).ok()?;
+        let key = INLINE_IMAGE_KEYS
+            .iter()
+            .find(|(short, _)| *short == key.as_slice())
+            .map_or(key.clone(), |(_, full)| full.to_vec());
+        dict.insert(key, value);
+        pos = after_value;
+    }
+    // One whitespace byte ends `ID`; the whitespace before `EI` is not data.
+    let data = body.get(pos + 1..).unwrap_or_default();
+    let data = data
+        .strip_suffix(b"\r\n")
+        .or_else(|| data.strip_suffix(b"\n"))
+        .or_else(|| data.strip_suffix(b"\r"))
+        .or_else(|| data.strip_suffix(b" "))
+        .unwrap_or(data);
+    Some((dict, data))
+}
+
+fn is_pdf_whitespace(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0 | 12)
 }
 
 /// What [`RawBackend::collect_images`] has already seen on one page.

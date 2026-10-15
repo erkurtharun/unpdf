@@ -85,12 +85,15 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<ContentOp>> {
                     operand_stack.push(PdfValue::Other);
                 }
                 "BI" => {
-                    // Inline image: skip until EI
-                    i = skip_inline_image(data, i);
-                    // Emit BI as an operator with no operands (stack should be empty)
+                    // An inline image (ISO 32000-1 §8.9.7): its dictionary, `ID`, its data,
+                    // `EI`. The body between `BI` and `EI` is the operator's one operand;
+                    // reading it is the backend's (`PdfBackend::inline_image`).
+                    let (body, next) = inline_image_body(data, i);
+                    i = next;
+                    operand_stack.clear();
                     ops.push(ContentOp::new(
                         "BI".to_string(),
-                        std::mem::take(&mut operand_stack),
+                        vec![PdfValue::Str(body.to_vec())],
                     ));
                 }
                 _ => {
@@ -404,43 +407,39 @@ fn parse_array(data: &[u8], start: usize) -> (PdfValue, usize) {
     (PdfValue::Array(elements), i)
 }
 
-/// Skip an inline image block. Called right after consuming `BI`.
-/// We need to find `ID` (image data marker), then scan for `EI`.
-fn skip_inline_image(data: &[u8], start: usize) -> usize {
+/// The body of the inline image whose `BI` ends at `start` — everything up to its `EI`, the
+/// dictionary and `ID` included — and the position just past `EI`.
+///
+/// `ID` is the first one that stands as a token: after whitespace or the end of a dictionary
+/// value (`>>`, `]`, `)`), before whitespace. `EI` is the first after it that stands between
+/// whitespace and whitespace, a delimiter or the end of the stream.
+fn inline_image_body(data: &[u8], start: usize) -> (&[u8], usize) {
     let len = data.len();
     let mut i = start;
 
-    // Find `ID` marker (must be preceded by whitespace)
     while i + 1 < len {
-        if data[i] == b'I' && data[i + 1] == b'D' {
-            // Check that ID is preceded by whitespace (or start)
-            let preceded = i == 0 || is_whitespace(data[i - 1]);
-            if preceded {
-                i += 2; // skip "ID"
-                        // Skip the single whitespace after ID
-                if i < len && is_whitespace(data[i]) {
-                    i += 1;
-                }
-                break;
-            }
+        let preceded =
+            i == 0 || is_whitespace(data[i - 1]) || matches!(data[i - 1], b'>' | b']' | b')');
+        let followed = i + 2 >= len || is_whitespace(data[i + 2]);
+        if data[i] == b'I' && data[i + 1] == b'D' && preceded && followed {
+            i += 2;
+            break;
         }
         i += 1;
     }
 
-    // Now scan for `EI` preceded by whitespace and followed by whitespace/EOF
     while i + 1 < len {
         if data[i] == b'E'
             && data[i + 1] == b'I'
             && (i == 0 || is_whitespace(data[i - 1]))
             && (i + 2 >= len || is_whitespace(data[i + 2]) || is_delimiter(data[i + 2]))
         {
-            return i + 2; // past "EI"
+            return (&data[start..i], i + 2);
         }
         i += 1;
     }
 
-    // If we never found EI, return end of data
-    len
+    (&data[start.min(len)..], len)
 }
 
 #[cfg(test)]

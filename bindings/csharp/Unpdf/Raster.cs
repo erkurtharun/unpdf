@@ -39,7 +39,8 @@ public sealed class RenderGaps
     [JsonPropertyName("images")]
     public uint Images { get; init; }
 
-    /// <summary>Inline images (<c>BI … EI</c>) not painted.</summary>
+    /// <summary>Inline images (<c>BI … EI</c>) whose dictionary does not read; one in a codec or
+    /// color space the renderer does not decode is counted in <see cref="Images"/>.</summary>
     [JsonPropertyName("inline_images")]
     public uint InlineImages { get; init; }
 

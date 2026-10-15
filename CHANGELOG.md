@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Inline images are painted.** A page's `BI … ID … EI` image was skipped by the renderer
+  and counted in `gaps.inline_images`; it is now read like an image XObject -- the
+  abbreviated keys (`W`, `H`, `BPC`, `CS`, `F`, `DP`, `D`, `IM`) and filter names, a named
+  color space from the page's resources, stencil masks -- and painted. `inline_images` now
+  counts only inline images whose dictionary does not read; one in a codec or color space
+  the renderer does not decode is counted in `images`, as an XObject image is. An `ID` written
+  right after a dictionary value (`/F [/AHx]ID`) is recognized.
+
 ### Fixed
 
 - **An image no longer decodes to many times its stream's size.** A sample stream is bounded,
