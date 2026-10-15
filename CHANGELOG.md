@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.46.0 — 2026-10-15
+
 ### Added
 
 - **Type 3 fonts are painted.** Text in a Type 3 font was left out of a rendered page and
