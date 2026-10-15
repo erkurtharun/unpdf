@@ -661,6 +661,7 @@ impl Painter<'_> {
         let invisible = matches!(text.render_mode, 3 | 7);
         let mut missing = false;
         let mut substituted = false;
+        let mut unpainted_color = false;
         // Taken out of the cache while its glyphs are painted, put back after.
         let mut loaded = self.fonts.remove(&key).flatten();
 
@@ -736,7 +737,8 @@ impl Painter<'_> {
                                 .pre_concat(Transform::from_translate(origin.tx, origin.ty))
                                 .pre_concat(to_text)
                                 .pre_concat(glyph_space);
-                            self.paint_glyph(&outline, transform, text.render_mode);
+                            unpainted_color |=
+                                !self.paint_glyph(&outline, transform, text.render_mode);
                         }
                     }
                     Some(_) => {}
@@ -748,6 +750,10 @@ impl Painter<'_> {
         self.fonts.insert(key, loaded);
         if missing {
             self.gaps.text_runs += 1;
+        }
+        // Text in a pattern this does not paint (a tiling pattern), once per run.
+        if unpainted_color {
+            self.gaps.shadings += 1;
         }
         if substituted {
             self.substituted_text_runs += 1;
@@ -857,24 +863,30 @@ impl Painter<'_> {
         self.uncolored_glyph = saved_uncolored;
     }
 
-    /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both).
-    fn paint_glyph(&mut self, outline: &Path, transform: Transform, mode: i64) {
+    /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both). `false` when
+    /// part of it was not painted: its color is a pattern this does not paint.
+    fn paint_glyph(&mut self, outline: &Path, transform: Transform, mode: i64) -> bool {
         let fill = matches!(mode, 0 | 2 | 4 | 6);
         let stroke = matches!(mode, 1 | 2 | 5 | 6);
-        if fill && !self.state.fill_pattern {
-            let paint = solid(self.state.fill, self.state.fill_alpha);
-            self.pixmap.fill_path(
-                outline,
-                &paint,
-                FillRule::Winding,
-                transform,
-                self.state.clip.as_ref(),
-            );
+        let mut painted = true;
+        if fill {
+            match self.current_paint(false, transform) {
+                Some(paint) => self.pixmap.fill_path(
+                    outline,
+                    &paint,
+                    FillRule::Winding,
+                    transform,
+                    self.state.clip.as_ref(),
+                ),
+                None => painted = false,
+            }
         }
-        if stroke && !self.state.stroke_pattern {
-            let paint = solid(self.state.stroke, self.state.stroke_alpha);
+        if stroke {
             // The line width is in user space; the glyph path is in glyph space. Stroke in
             // device space with the width the CTM gives it.
+            let Some(paint) = self.current_paint(true, Transform::identity()) else {
+                return false;
+            };
             if let Some(device) = outline.clone().transform(transform) {
                 let width = self.state.line_width * transform_scale(&self.state.ctm);
                 let stroke = Stroke {
@@ -890,6 +902,7 @@ impl Painter<'_> {
                 );
             }
         }
+        painted
     }
 
     fn space_named(&self, op: &ContentOp, name: &[u8]) -> PaintSpace {
@@ -935,15 +948,7 @@ impl Painter<'_> {
         let path = builder.finish();
         if let Some(path) = &path {
             if let Some(rule) = fill {
-                let paint = if self.state.fill_pattern {
-                    self.state
-                        .fill_shading
-                        .as_deref()
-                        .and_then(|(s, t)| self.pattern_paint(s, *t, self.state.fill_alpha))
-                } else {
-                    Some(solid(self.state.fill, self.state.fill_alpha))
-                };
-                match paint {
+                match self.current_paint(false, self.state.ctm) {
                     Some(paint) => self.pixmap.fill_path(
                         path,
                         &paint,
@@ -955,15 +960,7 @@ impl Painter<'_> {
                 }
             }
             if stroke {
-                let paint = if self.state.stroke_pattern {
-                    self.state
-                        .stroke_shading
-                        .as_deref()
-                        .and_then(|(s, t)| self.pattern_paint(s, *t, self.state.stroke_alpha))
-                } else {
-                    Some(solid(self.state.stroke, self.state.stroke_alpha))
-                };
-                match paint {
+                match self.current_paint(true, self.state.ctm) {
                     Some(paint) => self.stroke(path, &paint),
                     None => self.gaps.shadings += 1,
                 }
@@ -989,17 +986,40 @@ impl Painter<'_> {
         Some(Rc::new((shading, transform)))
     }
 
-    /// A pattern's shading as a paint for a path drawn in the current user space. The path's
-    /// transform (the CTM) applies to the shader too, so the shader is placed by the CTM's
-    /// inverse followed by the pattern's own transform to device pixels.
+    /// A pattern's shading as a paint for a path drawn with `path_transform` (the CTM for a
+    /// path, the glyph's transform for a glyph). That transform applies to the shader too, so
+    /// the shader is placed by its inverse followed by the pattern's own transform to device
+    /// pixels.
     fn pattern_paint(
-        &self,
         shading: &Shading,
         to_device: Transform,
         alpha: f32,
+        path_transform: Transform,
     ) -> Option<Paint<'static>> {
-        let to_user = self.state.ctm.invert()?.pre_concat(to_device);
-        shading_paint(shading, to_user, alpha)
+        let to_path = path_transform.invert()?.pre_concat(to_device);
+        shading_paint(shading, to_path, alpha)
+    }
+
+    /// The paint for filling (`stroke` false) or stroking with the current color, drawn with
+    /// `path_transform`. `None` when the color is a pattern this does not paint.
+    fn current_paint(&self, stroke: bool, path_transform: Transform) -> Option<Paint<'static>> {
+        let (pattern, shading, color, alpha) = if stroke {
+            let s = &self.state;
+            (
+                s.stroke_pattern,
+                &s.stroke_shading,
+                s.stroke,
+                s.stroke_alpha,
+            )
+        } else {
+            let s = &self.state;
+            (s.fill_pattern, &s.fill_shading, s.fill, s.fill_alpha)
+        };
+        if !pattern {
+            return Some(solid(color, alpha));
+        }
+        let (shading, to_device) = shading.as_deref()?;
+        Self::pattern_paint(shading, *to_device, alpha, path_transform)
     }
 
     /// `sh`: paint a shading over the clip — or over its `/BBox` — in the current user space,

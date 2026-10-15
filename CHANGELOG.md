@@ -26,6 +26,10 @@
 
 ### Fixed
 
+- **Text in a pattern color is painted, or reported.** A glyph filled or stroked with a pattern
+  was left out of a rendered page without being counted anywhere. Text in a shading pattern is
+  now painted in the pattern's colors, placed as for a path; text in a pattern this does not
+  paint (a tiling pattern) is counted in `gaps.shadings`, once per text run.
 - **An image no longer decodes to many times its stream's size.** A sample stream is bounded,
   but a pixel costs more than a sample -- a 1-bit palette image becomes 24 bits of RGB, and 32
   of RGBA when a page is rendered -- so an image within the stream limit could still ask for

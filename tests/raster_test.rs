@@ -585,6 +585,55 @@ fn a_stand_in_glyph_is_fitted_to_the_width_the_font_gives_it() {
     assert_eq!(page.substituted_text_runs, 1);
 }
 
+/// Whether some pixel in `x0..x1` × `y0..y1` is within `near` of `color`.
+#[cfg(feature = "standard-fonts")]
+fn has_color(page: &RasteredPage, x0: u32, x1: u32, y0: u32, y1: u32, color: [u8; 3]) -> bool {
+    (y0..y1).any(|y| (x0..x1).any(|x| near(px(page, x, y), color)))
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn text_in_a_shading_pattern_is_painted_in_its_colors() {
+    // Red up to x 90, blue from x 140, across `Hello`.
+    let resources = format!(
+        "/Resources<</Pattern<</P0<</PatternType 2/Shading<</ShadingType 2/ColorSpace/DeviceRGB\
+          /Coords[90 0 140 0]/Function {RED_TO_BLUE}/Extend[true true]>>>>>>>>"
+    );
+    let page = render(
+        &page_pdf(
+            &resources,
+            A4,
+            b"/Pattern cs /P0 scn BT /F1 40 Tf 72 700 Td (Hello) Tj ET",
+        ),
+        &PT,
+    );
+    assert!(
+        has_color(&page, 72, 90, 842 - 732, 842 - 700, RED),
+        "red at the start"
+    );
+    assert!(
+        has_color(&page, 140, 175, 842 - 732, 842 - 700, [0, 0, 255]),
+        "blue at the end"
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[cfg(feature = "standard-fonts")]
+#[test]
+fn text_in_a_tiling_pattern_is_reported() {
+    let resources = "/Resources<</Pattern<</P0<</PatternType 1/PaintType 1/TilingType 1\
+                     /BBox[0 0 10 10]/XStep 10/YStep 10/Resources<<>>/Length 0>>>>>>";
+    let page = render(
+        &page_pdf(
+            resources,
+            A4,
+            b"/Pattern cs /P0 scn BT /F1 40 Tf 72 700 Td (Hello) Tj ET",
+        ),
+        &PT,
+    );
+    assert_eq!(page.gaps.shadings, 1, "{:?}", page.gaps);
+}
+
 #[cfg(not(feature = "standard-fonts"))]
 #[test]
 fn without_stand_in_faces_a_font_that_is_not_embedded_is_a_gap() {
