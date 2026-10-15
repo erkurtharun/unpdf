@@ -335,11 +335,17 @@ pub(crate) fn convert_xobject_pub(xobj: RawXObject) -> Option<Resource> {
         ..
     } = xobj;
 
-    // A fax image is re-encoded as its decoded samples are: the bits the codec decodes to are
-    // what a 1-bit image without a codec stores.
+    // A bi-level image (CCITT, JBIG2) is re-encoded as its decoded samples are: the bits the
+    // codec decodes to are what a 1-bit image without a codec stores.
     let (data, filter) = match (filter.as_deref(), &codec_parms, width, height) {
         (Some("CCITTFaxDecode"), Some(CodecParms::Ccitt(parms)), Some(w), Some(h)) => {
             match super::ccitt::decode(&data, parms, w, h) {
+                Some(samples) => (samples, None),
+                None => (data, filter),
+            }
+        }
+        (Some("JBIG2Decode"), Some(CodecParms::Jbig2 { globals }), Some(w), Some(h)) => {
+            match super::jbig2::decode(&data, globals.as_deref(), w, h) {
                 Some(samples) => (samples, None),
                 None => (data, filter),
             }

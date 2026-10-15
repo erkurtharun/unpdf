@@ -186,6 +186,8 @@ impl<T> ReorderBuffer<T> {
         self.heap.is_empty()
     }
 
+    /// How many pages are waiting — what the windowed parallel parse measures its window by.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn len(&self) -> usize {
         self.heap.len()
     }

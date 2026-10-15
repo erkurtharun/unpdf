@@ -61,7 +61,7 @@ pub struct RasterGaps {
     /// and no standard face stands in for it, or is one this does not read, or a code
     /// selects no glyph in it (in a Type 3 font: no glyph procedure).
     pub text_runs: u32,
-    /// Images not painted: a codec this does not decode (JPEG 2000, JBIG2), a color
+    /// Images not painted: a codec this does not decode, a color
     /// space it does not convert, or data that did not decode.
     pub images: u32,
     /// Inline images (`BI … EI`) not painted: a dictionary that does not read. One that reads
@@ -1401,8 +1401,10 @@ fn downsample(pixmap: Pixmap, target: (f32, f32)) -> Pixmap {
 
 /// An image's samples as 8-bit gray or RGB pixels, decoding the codecs this reads.
 fn decode_samples(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
-    if image.filter.as_deref() == Some("DCTDecode") {
-        return decode_jpeg(&image.data, w, h);
+    match image.filter.as_deref() {
+        Some("DCTDecode") => return decode_jpeg(&image.data, w, h),
+        Some("JPXDecode") => return decode_jpx(image, w, h),
+        _ => {}
     }
     let samples = plain_samples(image, w, h)?;
     png_encode::image_pixels(
@@ -1415,14 +1417,31 @@ fn decode_samples(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, V
     )
 }
 
+/// A JPEG 2000 image's pixels. Its codestream says its size and, when the image dictionary
+/// gives no `/ColorSpace`, its color space; `/Decode` is ignored (ISO 32000-1 §8.9.5.3). A
+/// codestream of another size than the dictionary declares is not drawn, as other decoders
+/// fail it, and an alpha channel is dropped (`/SMaskInData` is not read).
+fn decode_jpx(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
+    let decoded = super::jpx::decode(&image.data, image.color.as_ref(), |width, height| {
+        png_encode::decodable(width, height, 4)
+    })?;
+    if (decoded.width, decoded.height) != (w, h) {
+        return None;
+    }
+    png_encode::image_pixels(w, h, 8, &decoded.color, None, &decoded.samples)
+}
+
 /// The image's samples as an image without a codec stores them: its data, or the 1-bit
-/// samples a CCITT codec decodes to. `None` for any other codec.
+/// samples a bi-level codec (CCITT, JBIG2) decodes to. `None` for any other codec.
 fn plain_samples(image: &RawXObject, w: u32, h: u32) -> Option<std::borrow::Cow<'_, [u8]>> {
     use std::borrow::Cow;
     match (image.filter.as_deref(), &image.codec_parms) {
         (None, _) => Some(Cow::Borrowed(&image.data)),
         (Some("CCITTFaxDecode"), Some(CodecParms::Ccitt(parms))) => {
             super::ccitt::decode(&image.data, parms, w, h).map(Cow::Owned)
+        }
+        (Some("JBIG2Decode"), Some(CodecParms::Jbig2 { globals })) => {
+            super::jbig2::decode(&image.data, globals.as_deref(), w, h).map(Cow::Owned)
         }
         _ => None,
     }

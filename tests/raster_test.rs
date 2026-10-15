@@ -574,6 +574,110 @@ fn a_ccitt_image_that_does_not_decode_is_reported() {
     assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
 }
 
+/// A 16 x 8 JBIG2 page (an immediate generic region, MMR-coded), white on the left half and
+/// black on the right, as MuPDF renders it.
+const JBIG2_HALVES: &[u8] = include_bytes!("fixtures/halves_white_black_16x8.jb2");
+
+fn jbig2_page(entries: &str) -> RasteredPage {
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 16/Height 8{entries}\
+              /Filter/JBIG2Decode/Length {}>>",
+            JBIG2_HALVES.len()
+        ),
+        JBIG2_HALVES,
+    );
+    render(
+        &page_pdf_with_xobjects(
+            A4,
+            b"1 0 0 rg q 160 0 0 80 100 100 cm /B Do Q",
+            vec![("B", image)],
+        ),
+        &PT,
+    )
+}
+
+#[test]
+fn a_jbig2_image_is_decoded() {
+    let page = jbig2_page("/ColorSpace/DeviceGray/BitsPerComponent 1");
+    assert!(
+        near(px(&page, 120, 842 - 140), WHITE),
+        "{:?}",
+        px(&page, 120, 702)
+    );
+    assert!(
+        near(px(&page, 240, 842 - 140), [0, 0, 0]),
+        "{:?}",
+        px(&page, 240, 702)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_jbig2_stencil_mask_paints_the_fill_color() {
+    let page = jbig2_page("/ImageMask true");
+    assert!(near(px(&page, 120, 842 - 140), WHITE));
+    assert!(near(px(&page, 240, 842 - 140), RED));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+/// A page drawing a JPEG 2000 image over x 100..260, y 100..180.
+fn jpx_page(entries: &str, data: &[u8]) -> RasteredPage {
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image{entries}/BitsPerComponent 8/Filter/JPXDecode/Length {}>>",
+            data.len()
+        ),
+        data,
+    );
+    render(
+        &page_pdf_with_xobjects(A4, b"q 160 0 0 80 100 100 cm /J Do Q", vec![("J", image)]),
+        &PT,
+    )
+}
+
+#[test]
+fn a_jpeg_2000_image_is_decoded_in_its_own_color_space() {
+    // A JP2 file, red on the left half and blue on the right (as MuPDF renders it); the
+    // dictionary gives no /ColorSpace, so the file's own (sRGB) is used.
+    let page = jpx_page(
+        "/Width 8/Height 4",
+        include_bytes!("fixtures/halves_red_blue_8x4.jp2"),
+    );
+    assert!(
+        near(px(&page, 120, 842 - 140), RED),
+        "{:?}",
+        px(&page, 120, 702)
+    );
+    assert!(
+        near(px(&page, 240, 842 - 140), [0, 0, 255]),
+        "{:?}",
+        px(&page, 240, 702)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_jpeg_2000_codestream_is_read_in_the_dictionary_s_color_space() {
+    // A bare codestream, black on the left and white on the right, under /DeviceGray.
+    let page = jpx_page(
+        "/Width 8/Height 4/ColorSpace/DeviceGray",
+        include_bytes!("fixtures/halves_black_white_8x4.j2k"),
+    );
+    assert!(near(px(&page, 120, 842 - 140), [0, 0, 0]));
+    assert!(near(px(&page, 240, 842 - 140), WHITE));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_jpeg_2000_image_of_another_size_than_declared_is_reported() {
+    let page = jpx_page(
+        "/Width 16/Height 4",
+        include_bytes!("fixtures/halves_red_blue_8x4.jp2"),
+    );
+    assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
+}
+
 #[test]
 fn a_stencil_mask_paints_the_fill_color_where_it_marks() {
     // 2 x 1 stencil: bit 0 (left) marks, bit 1 (right) does not.

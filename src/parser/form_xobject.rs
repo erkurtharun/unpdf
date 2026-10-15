@@ -60,6 +60,7 @@ pub(crate) fn page_operations(backend: &dyn PdfBackend, page: PageId) -> Result<
 /// The operators of content painted with `form`'s resources -- a tiling pattern's cell, whose
 /// operators already carry it as their form -- with the Form XObjects it paints interpreted in
 /// place. `undecodable_streams` counts the forms whose streams could not be decoded.
+#[cfg(feature = "raster")]
 pub(crate) fn content_operations(
     backend: &dyn PdfBackend,
     page: PageId,

@@ -195,3 +195,15 @@ fn a_ccitt_image_is_reencoded_as_png() {
     assert_eq!(images.len(), 1);
     assert_eq!(images[0].mime_type, "image/png");
 }
+
+/// A JBIG2 image is re-encoded as PNG from its decoded samples too.
+#[test]
+fn a_jbig2_image_is_reencoded_as_png() {
+    let pdf = image_page(
+        "/Width 16/Height 8/ColorSpace/DeviceGray/BitsPerComponent 1/Filter/JBIG2Decode",
+        include_bytes!("fixtures/halves_white_black_16x8.jb2"),
+    );
+    let images = resources(&pdf);
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].mime_type, "image/png");
+}

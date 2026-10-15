@@ -4,6 +4,7 @@ pub mod backend;
 #[rustfmt::skip]
 mod agl_data;
 pub mod bidi;
+mod bilevel;
 mod ccitt;
 mod cff;
 mod clip;
@@ -21,6 +22,9 @@ pub(crate) mod font;
 mod form_xobject;
 mod function;
 pub(crate) mod glyph_metrics;
+mod jbig2;
+#[cfg(feature = "raster")]
+mod jpx;
 mod lattice;
 mod layout;
 mod ocr_gate;

@@ -25,14 +25,21 @@
   which was read as a tint before. As pdf.js does, what a cell paints past its step is cut off
   and a cell is at most 3000 pixels a side. A pattern nested more than three deep in its own
   cells is counted in `gaps.shadings`.
-- **CCITT fax images are decoded.** An image in `CCITTFaxDecode` -- Group 4, and Group 3 one-
-  and two-dimensional, with its `/DecodeParms` (`/K`, `/Columns`, `/Rows`, `/BlackIs1`,
-  `/EncodedByteAlign`, `/EndOfLine`, `/EndOfBlock`) -- was not painted and was counted in
-  `gaps.images`, and as a resource it came out as undecoded bytes. It is now decoded to the 1-bit
-  samples the filter produces and read like any 1-bit image: painted (a stencil mask in the fill
-  color), and re-encoded as PNG in the resource inventory. Data that goes wrong partway keeps the
-  rows decoded before it; a row wider than the image is cut to it. Scanned documents commonly
-  store their pages this way.
+- **CCITT fax and JBIG2 images are decoded.** An image in `CCITTFaxDecode` or `JBIG2Decode` was
+  not painted (counted in `gaps.images`) and came out of the resource inventory as undecoded
+  bytes. Both are now decoded to the 1-bit samples the filter produces and read like any 1-bit
+  image: painted (a stencil mask in the fill color) and re-encoded as PNG in the resource
+  inventory. CCITT: Group 4, and Group 3 one- and two-dimensional, with its `/DecodeParms`
+  (`/K`, `/Columns`, `/Rows`, `/BlackIs1`, `/EncodedByteAlign`, `/EndOfLine`, `/EndOfBlock`).
+  JBIG2: the embedded stream with its `/JBIG2Globals`; a page declaring a size past the bound
+  on images is refused before anything is allocated. Data that goes wrong partway keeps the
+  rows decoded before it. Scanned documents commonly store their pages in one of these two.
+- **JPEG 2000 images are painted.** An image in `JPXDecode` was counted in `gaps.images`; it is
+  now decoded -- a JP2 file or a bare codestream, in the dictionary's `/ColorSpace` when it
+  gives one and in the codestream's own otherwise, as ISO 32000-1 §8.9.5.3 has it. An alpha
+  channel is dropped (`/SMaskInData` is not read), and a codestream of another size than the
+  dictionary declares is still counted in `gaps.images`. The resource inventory hands JPEG 2000
+  images on as `image/jp2`, as before.
 - **Inline images are painted.** A page's `BI … ID … EI` image was skipped by the renderer
   and counted in `gaps.inline_images`; it is now read like an image XObject -- the
   abbreviated keys (`W`, `H`, `BPC`, `CS`, `F`, `DP`, `D`, `IM`) and filter names, a named

@@ -271,6 +271,8 @@ pub struct RawXObject {
 pub enum CodecParms {
     /// `/CCITTFaxDecode`'s `/DecodeParms`.
     Ccitt(CcittParms),
+    /// `/JBIG2Decode`: the segments of `/JBIG2Globals`, decoded, when the image has them.
+    Jbig2 { globals: Option<Vec<u8>> },
 }
 
 /// `/CCITTFaxDecode`'s parameters (ISO 32000-1 §7.4.6, Table 11), defaults filled in.
@@ -1475,6 +1477,13 @@ impl RawBackend {
         let color_space_entry = raw_dict_get(dict, b"ColorSpace");
         let codec_parms = match filter.as_deref() {
             Some("CCITTFaxDecode") => Some(CodecParms::Ccitt(self.ccitt_parms(dict))),
+            Some("JBIG2Decode") => Some(CodecParms::Jbig2 {
+                globals: self
+                    .last_decode_parms(dict)
+                    .and_then(|parms| raw_dict_get(parms, b"JBIG2Globals"))
+                    .and_then(|g| self.doc.resolve(g).as_stream())
+                    .and_then(|g| raw_stream::decompress(g).ok()),
+            }),
             _ => None,
         };
         let smask = (depth == 0)
