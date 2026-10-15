@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{page_pdf, page_pdf_with_xobjects, stream_object};
+use common::{assemble, page_pdf, page_pdf_with_xobjects, stream_object};
 use unpdf::parser::raster::{PageRegion, RasterOptions, RasteredPage};
 use unpdf::parser::PdfParser;
 
@@ -400,6 +400,72 @@ fn a_shading_this_does_not_read_is_reported() {
         &PT,
     );
     assert_eq!(page.gaps.shadings, 1, "{:?}", page.gaps);
+}
+
+/// A page showing `content` with `/T3`, a Type 3 font whose 1000-unit glyph space is a text
+/// space unit: `a` (code 97) is an uncolored square that sets blue in vain, `b` a colored
+/// green half-width bar.
+fn type3_pdf(content: &[u8]) -> Vec<u8> {
+    let a = b"1000 0 0 0 1000 1000 d1 0 0 1 rg 0 0 1000 1000 re f";
+    let b = b"1000 0 d0 0 1 0 rg 0 0 500 1000 re f";
+    assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]/Resources<</Font<</T3 5 0 R>>>>\
+          /Contents 4 0 R>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        b"<</Type/Font/Subtype/Type3/FontBBox[0 0 1000 1000]/FontMatrix[0.001 0 0 0.001 0 0]\
+          /CharProcs<</a 6 0 R/b 7 0 R>>/Encoding<</Type/Encoding/Differences[97/a/b]>>\
+          /FirstChar 97/LastChar 98/Widths[1000 1000]/Resources<<>>>>"
+            .to_vec(),
+        stream_object(&format!("<</Length {}>>", a.len()), a),
+        stream_object(&format!("<</Length {}>>", b.len()), b),
+    ])
+}
+
+#[test]
+fn a_type3_font_s_glyphs_are_drawn_by_their_procedures() {
+    let page = render(
+        &type3_pdf(b"1 0 0 rg BT /T3 50 Tf 100 100 Td (ab) Tj (a) Tj ET 300 300 10 10 re f"),
+        &PT,
+    );
+    // `a`: the current fill (red), not the blue its procedure sets.
+    assert!(
+        near(px(&page, 125, 842 - 125), RED),
+        "{:?}",
+        px(&page, 125, 717)
+    );
+    // `b`: its own green, half a glyph wide, after `a`'s 50 pt advance.
+    assert!(
+        near(px(&page, 160, 842 - 125), [0, 255, 0]),
+        "{:?}",
+        px(&page, 160, 717)
+    );
+    assert!(
+        near(px(&page, 190, 842 - 125), WHITE),
+        "{:?}",
+        px(&page, 190, 717)
+    );
+    // The next `a` is red again: `b`'s color stayed inside its procedure.
+    assert!(
+        near(px(&page, 225, 842 - 125), RED),
+        "{:?}",
+        px(&page, 225, 717)
+    );
+    // So is what is painted after the text.
+    assert!(
+        near(px(&page, 305, 842 - 305), RED),
+        "{:?}",
+        px(&page, 305, 537)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_code_with_no_glyph_procedure_is_reported() {
+    let page = render(&type3_pdf(b"BT /T3 50 Tf 100 100 Td (z) Tj ET"), &PT);
+    assert_eq!(page.gaps.text_runs, 1, "{:?}", page.gaps);
 }
 
 #[test]

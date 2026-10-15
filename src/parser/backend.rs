@@ -295,6 +295,17 @@ pub enum ShadingGeometry {
     },
 }
 
+/// A Type 3 font (ISO 32000-1 §9.6.5): glyphs drawn by content-stream procedures.
+#[derive(Debug, Clone)]
+pub struct Type3Font {
+    /// `/FontMatrix`: glyph space → text space.
+    pub matrix: [f32; 6],
+    /// Each code's glyph procedure — the `/CharProcs` entry its `/Encoding /Differences` names —
+    /// decoded. Its operations carry the font as their form when the font is an indirect
+    /// object, so the names they use resolve in the font's `/Resources`, then the page's.
+    pub glyphs: HashMap<u8, Vec<ContentOp>>,
+}
+
 /// The format of an embedded font program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontFormat {
@@ -647,6 +658,11 @@ pub trait PdfBackend: Send + Sync {
     /// select glyphs. `None` for a font with no program this reads (not embedded, Type 3)
     /// or a composite font under a CMap other than `Identity-H`/`-V`.
     fn font_program(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<FontProgram> {
+        None
+    }
+
+    /// The Type 3 font `font_name` refers to in `scope`. `None` for any other font.
+    fn type3_font(&self, _scope: ResourceScope, _font_name: &[u8]) -> Option<Type3Font> {
         None
     }
 
@@ -1098,6 +1114,43 @@ impl PdfBackend for RawBackend {
 
     fn font_program(&self, scope: ResourceScope, font_name: &[u8]) -> Option<FontProgram> {
         self.font_resolver.font_program(&self.doc, scope, font_name)
+    }
+
+    fn type3_font(&self, scope: ResourceScope, font_name: &[u8]) -> Option<Type3Font> {
+        let doc = &self.doc;
+        let font = self.font_resolver.find_font(doc, scope, font_name)?;
+        let dict = font.dict;
+        let subtype = raw_dict_get(dict, b"Subtype").and_then(|s| s.as_name());
+        if subtype != Some(b"Type3".as_slice()) {
+            return None;
+        }
+        let matrix = raw_dict_get(dict, b"FontMatrix").and_then(|m| matrix_from(doc, m))?;
+        let encoding = raw_dict_get(dict, b"Encoding").and_then(|e| raw_resolve_dict(doc, e))?;
+        let procs = raw_dict_get(dict, b"CharProcs").and_then(|p| raw_resolve_dict(doc, p))?;
+        let form = match font.key {
+            FontKey::Object(id) => Some(id),
+            FontKey::Inline { .. } => None,
+        };
+        let mut glyphs = HashMap::new();
+        for (code, name) in self.font_resolver.parse_differences(doc, encoding) {
+            let Some(stream) = raw_dict_get(procs, name.as_bytes())
+                .map(|p| doc.resolve(p))
+                .and_then(|p| p.as_stream())
+            else {
+                continue;
+            };
+            let Ok(data) = raw_stream::decompress(stream) else {
+                continue;
+            };
+            let Ok(mut ops) = self.decode_content(&data) else {
+                continue;
+            };
+            for op in &mut ops {
+                op.form = form;
+            }
+            glyphs.insert(code, ops);
+        }
+        Some(Type3Font { matrix, glyphs })
     }
 
     fn named_color_space(&self, scope: ResourceScope, name: &[u8]) -> Option<ImageColorSpace> {

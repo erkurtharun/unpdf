@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use super::backend::{
     ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue, RawXObject,
-    Shading, ShadingGeometry,
+    Shading, ShadingGeometry, Type3Font,
 };
 use super::png_encode::{self, PngColorType};
 use super::raster_text::LoadedFont;
@@ -57,8 +57,8 @@ pub enum PageRegion {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RasterGaps {
     /// Text runs not painted, or painted only in part: the font's program is not embedded
-    /// and no standard face stands in for it, or is one this does not read (Type 3), or a
-    /// code selects no glyph in it.
+    /// and no standard face stands in for it, or is one this does not read, or a code
+    /// selects no glyph in it (in a Type 3 font: no glyph procedure).
     pub text_runs: u32,
     /// Images not painted: a codec this does not decode (JPEG 2000, JBIG2, CCITT), a color
     /// space it does not convert, or data that did not decode.
@@ -182,6 +182,9 @@ pub(crate) fn render_page(
         pending_clip: None,
         text_matrix: TextMatrix::default(),
         fonts: HashMap::new(),
+        type3: HashMap::new(),
+        glyph_depth: 0,
+        uncolored_glyph: false,
         gaps: RasterGaps {
             undecodable_content_streams: painted.undecodable_streams as u32,
             ..RasterGaps::default()
@@ -342,6 +345,9 @@ impl GState {
     }
 }
 
+/// A font resource: the form whose resources name it (`None`: the page's), and its name.
+type FontResource = (Option<ObjectId>, Vec<u8>);
+
 struct Painter<'a> {
     backend: &'a dyn PdfBackend,
     page: PageId,
@@ -357,7 +363,14 @@ struct Painter<'a> {
     /// The text matrix and text line matrix, inside `BT … ET`.
     text_matrix: TextMatrix,
     /// Fonts loaded so far, by the resource that names them; `None` when unpaintable.
-    fonts: HashMap<(Option<ObjectId>, Vec<u8>), Option<LoadedFont>>,
+    fonts: HashMap<FontResource, Option<LoadedFont>>,
+    /// Type 3 fonts looked up so far, by the same key; `None` for a font of any other type.
+    type3: HashMap<FontResource, Option<Rc<Type3Font>>>,
+    /// How many Type 3 glyph procedures are running, one inside another.
+    glyph_depth: usize,
+    /// Inside a glyph procedure that began with `d1`: the glyph is a shape painted in the
+    /// color current where the text is shown, so its own color operators are ignored.
+    uncolored_glyph: bool,
     gaps: RasterGaps,
     substituted_text_runs: u32,
 }
@@ -378,6 +391,15 @@ impl Painter<'_> {
         if op.form != self.current_form {
             self.current_form = op.form;
             self.state.pattern_base = self.state.ctm;
+        }
+        // An uncolored glyph's procedure sets no color of its own (ISO 32000-1 §9.6.5).
+        if self.uncolored_glyph
+            && matches!(
+                op.operator.as_str(),
+                "g" | "G" | "rg" | "RG" | "k" | "K" | "cs" | "CS" | "sc" | "scn" | "SC" | "SCN"
+            )
+        {
+            return;
         }
         let n = |i: usize| op.operands.get(i).and_then(number);
         let all = || op.operands.iter().filter_map(number).collect::<Vec<f32>>();
@@ -580,6 +602,8 @@ impl Painter<'_> {
                     None => self.gaps.inline_images += 1,
                 }
             }
+            // Type 3 glyph metrics: `d1` marks the glyph uncolored.
+            "d1" if self.glyph_depth > 0 => self.uncolored_glyph = true,
             "sh" => {
                 let shading = match op.operands.first() {
                     Some(PdfValue::Name(name)) => self.backend.shading(op.scope(self.page), name),
@@ -617,6 +641,14 @@ impl Painter<'_> {
         };
         let text = self.state.text.params.clone();
         let scope = op.scope(self.page);
+        if !self.type3.contains_key(&key) {
+            let font = self.backend.type3_font(scope, &key.1).map(Rc::new);
+            self.type3.insert(key.clone(), font);
+        }
+        if let Some(font) = self.type3.get(&key).cloned().flatten() {
+            self.show_type3(&font, scope, &key.1, &text, items);
+            return;
+        }
         if !self.fonts.contains_key(&key) {
             let loaded = self
                 .backend
@@ -720,6 +752,109 @@ impl Painter<'_> {
         if substituted {
             self.substituted_text_runs += 1;
         }
+    }
+
+    /// Show strings in a Type 3 font: each code's glyph procedure runs where the glyph goes,
+    /// then the text position advances by the glyph's width.
+    fn show_type3(
+        &mut self,
+        font: &Type3Font,
+        scope: super::backend::ResourceScope,
+        font_name: &[u8],
+        text: &TextParams,
+        items: &[PdfValue],
+    ) {
+        // Mode 3 paints nothing; mode 7 only clips, which glyph procedures do not do here.
+        let invisible = matches!(text.render_mode, 3 | 7);
+        let mut missing = false;
+        for item in items {
+            let bytes = match item {
+                PdfValue::Str(bytes) => bytes,
+                PdfValue::Integer(_) | PdfValue::Real(_) => {
+                    self.text_matrix
+                        .advance(text.adjustment(number(item).unwrap_or(0.0), false));
+                    continue;
+                }
+                _ => continue,
+            };
+            let advances = self.backend.glyph_advances(scope, font_name, bytes);
+            for (i, &code) in bytes.iter().enumerate() {
+                let measured =
+                    advances
+                        .as_ref()
+                        .and_then(|a| a.get(i).copied())
+                        .unwrap_or(GlyphAdvance {
+                            width: 0.0,
+                            vertical: None,
+                            is_word_space: code == 32,
+                        });
+                if !invisible {
+                    match font.glyphs.get(&code) {
+                        Some(ops) => self.run_glyph(ops, font.matrix, text, &measured),
+                        None => missing |= code != 32,
+                    }
+                }
+                self.text_matrix.advance(text.glyph_advance(&measured));
+            }
+        }
+        if missing {
+            self.gaps.text_runs += 1;
+        }
+    }
+
+    /// Run one Type 3 glyph procedure with glyph space placed at the current text position.
+    /// What the procedure does to the graphics, text and path state stays inside it.
+    fn run_glyph(
+        &mut self,
+        ops: &[ContentOp],
+        matrix: [f32; 6],
+        text: &TextParams,
+        measured: &GlyphAdvance,
+    ) {
+        // A glyph that shows text in a Type 3 font that shows text ... ends here.
+        const MAX_GLYPH_DEPTH: usize = 4;
+        if self.glyph_depth >= MAX_GLYPH_DEPTH {
+            return;
+        }
+        let origin = text.origin_offset(measured);
+        let to_text = Transform::from_row(
+            text.size * text.horizontal_scale,
+            0.0,
+            0.0,
+            text.size,
+            0.0,
+            text.rise,
+        );
+        let [a, b, c, d, e, f] = self.text_matrix.tm;
+        let [ma, mb, mc, md, me, mf] = matrix;
+        let glyph_space = self
+            .state
+            .ctm
+            .pre_concat(Transform::from_row(a, b, c, d, e, f))
+            .pre_concat(Transform::from_translate(origin.tx, origin.ty))
+            .pre_concat(to_text)
+            .pre_concat(Transform::from_row(ma, mb, mc, md, me, mf));
+
+        let saved_state = self.state.clone();
+        let saved_depth = self.stack.len();
+        let saved_path = std::mem::replace(&mut self.path, PathBuilder::new());
+        let saved_clip = self.pending_clip.take();
+        let saved_text = self.text_matrix.clone();
+        let saved_form = self.current_form;
+        let saved_uncolored = std::mem::replace(&mut self.uncolored_glyph, false);
+        self.state.ctm = glyph_space;
+        self.glyph_depth += 1;
+        for op in ops {
+            self.apply(op);
+        }
+        self.glyph_depth -= 1;
+        self.stack.truncate(saved_depth);
+        self.state = saved_state;
+        self.path = saved_path;
+        self.pending_clip = saved_clip;
+        self.text_matrix = saved_text;
+        self.current_form = saved_form;
+        self.uncolored_glyph = saved_uncolored;
     }
 
     /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both).

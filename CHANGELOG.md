@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Type 3 fonts are painted.** Text in a Type 3 font was left out of a rendered page and
+  counted in `gaps.text_runs`; each glyph's procedure now runs where the glyph goes, in glyph
+  space placed by the font's `/FontMatrix` -- an uncolored glyph (`d1`) in the color the text
+  is shown in, a colored one (`d0`) in its own colors -- with the names it uses resolved in the
+  font's `/Resources`. A code with no glyph procedure is still counted in `gaps.text_runs`.
+  Content-stream operators ending in digits (`d0`, `d1`) are read as one operator.
 - **Axial and radial shadings are painted.** `sh` and a fill or stroke in a shading pattern
   (`/PatternType 2`) were skipped by the renderer and counted in `gaps.shadings`; a type 2
   (axial) or type 3 (radial) shading is now painted, its colors from a sampled, exponential or

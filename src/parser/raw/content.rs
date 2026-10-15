@@ -68,8 +68,9 @@ pub fn parse_content_stream(data: &[u8]) -> Result<Vec<ContentOp>> {
         // Alphabetic token → could be operator or keyword (true/false/null)
         if is_operator_start(data[i]) {
             let start = i;
-            // Collect alphabetic characters
-            while i < len && data[i].is_ascii_alphabetic() {
+            // An operator is a run of regular characters: letters, and digits after the
+            // first (`d0`, `d1` in a Type 3 glyph procedure).
+            while i < len && data[i].is_ascii_alphanumeric() {
                 i += 1;
             }
             // Check for * suffix (T*, b*, B*)
@@ -445,6 +446,14 @@ fn inline_image_body(data: &[u8], start: usize) -> (&[u8], usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_operator_may_end_in_digits() {
+        let ops = parse_content_stream(b"1000 0 d0 1000 0 0 0 750 750 d1").unwrap();
+        let names: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
+        assert_eq!(names, ["d0", "d1"]);
+        assert_eq!((ops[0].operands.len(), ops[1].operands.len()), (2, 6));
+    }
 
     #[test]
     fn test_parse_simple_text_ops() {

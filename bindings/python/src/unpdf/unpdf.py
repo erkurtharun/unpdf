@@ -610,7 +610,7 @@ class RenderedPage:
     """A rendered page: a PNG, its size in pixels, and what it could not show.
 
     ``gaps`` counts, by reason, what the renderer left out — ``text_runs``
-    (text in fonts that are not embedded and have no stand-in, or are Type 3),
+    (text in fonts that are not embedded and have no stand-in),
     ``images`` (codecs it does not decode), ``inline_images`` (inline images
     whose dictionary does not read), ``shadings`` (mesh shadings and tiling
     patterns) and

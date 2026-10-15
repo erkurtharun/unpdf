@@ -792,8 +792,8 @@ public class UnpdfDocument : IDisposable
     /// is the same page text extraction reads, without reading the file again.
     /// </summary>
     /// <remarks>
-    /// Anything the renderer cannot paint yet (text in fonts that are not embedded or are
-    /// Type 3, some image codecs, mesh shadings, tiling patterns) is left out and counted in
+    /// Anything the renderer cannot paint yet (text in fonts that are not embedded and have
+    /// no stand-in, some image codecs, mesh shadings, tiling patterns) is left out and counted in
     /// <see cref="RenderedPage.Gaps"/>; the rest of the page is painted.
     /// </remarks>
     /// <param name="pageNumber">Page number (1-indexed).</param>

@@ -30,7 +30,7 @@ public sealed class RenderGaps
 {
     /// <summary>
     /// Text runs not painted, or painted in part: the font is not embedded and no standard
-    /// face stands in for it, or is Type 3, or a code selects no glyph in it.
+    /// face stands in for it, or a code selects no glyph in it.
     /// </summary>
     [JsonPropertyName("text_runs")]
     public uint TextRuns { get; init; }
