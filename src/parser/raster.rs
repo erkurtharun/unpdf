@@ -174,7 +174,7 @@ pub(crate) fn render_page(
     let mut painter = Painter {
         backend,
         page,
-        base,
+        current_form: None,
         pixmap,
         state: GState::new(base),
         stack: Vec::new(),
@@ -293,6 +293,10 @@ struct GState {
     /// pattern is a gap).
     fill_shading: Option<Rc<(Shading, Transform)>>,
     stroke_shading: Option<Rc<(Shading, Transform)>>,
+    /// The default space of the content being painted → device pixels: what a pattern's
+    /// matrix is relative to (ISO 32000-1 §8.7.3.1) — the page's, or, inside a form, the form's
+    /// space as it was entered.
+    pattern_base: Transform,
     line_width: f32,
     cap: LineCap,
     join: LineJoin,
@@ -326,6 +330,7 @@ impl GState {
             stroke_pattern: false,
             fill_shading: None,
             stroke_shading: None,
+            pattern_base: base,
             line_width: 1.0,
             cap: LineCap::Butt,
             join: LineJoin::Miter,
@@ -340,8 +345,8 @@ impl GState {
 struct Painter<'a> {
     backend: &'a dyn PdfBackend,
     page: PageId,
-    /// The page's default space → device pixels: what a pattern's matrix is relative to.
-    base: Transform,
+    /// The form whose operations are being painted (`None`: the page's own).
+    current_form: Option<ObjectId>,
     pixmap: Pixmap,
     state: GState,
     stack: Vec<GState>,
@@ -367,6 +372,13 @@ fn number(v: &PdfValue) -> Option<f32> {
 
 impl Painter<'_> {
     fn apply(&mut self, op: &ContentOp) {
+        // A form's operations follow the `q`, `cm` and clip that place it, so where they start
+        // the CTM is the form's space. (Leaving a form, the `Q` that follows restores the outer
+        // state, this included.)
+        if op.form != self.current_form {
+            self.current_form = op.form;
+            self.state.pattern_base = self.state.ctm;
+        }
         let n = |i: usize| op.operands.get(i).and_then(number);
         let all = || op.operands.iter().filter_map(number).collect::<Vec<f32>>();
         // The text state and the text position, read as text extraction reads them.
@@ -828,14 +840,17 @@ impl Painter<'_> {
     }
 
     /// The shading of the pattern `scn`/`SCN` names (its last operand), placed by its matrix
-    /// relative to the page's default space.
+    /// relative to the default space of the content being painted.
     fn pattern_shading(&self, op: &ContentOp) -> Option<Rc<(Shading, Transform)>> {
         let Some(PdfValue::Name(name)) = op.operands.last() else {
             return None;
         };
         let (shading, [a, b, c, d, e, f]) =
             self.backend.shading_pattern(op.scope(self.page), name)?;
-        let transform = self.base.pre_concat(Transform::from_row(a, b, c, d, e, f));
+        let transform = self
+            .state
+            .pattern_base
+            .pre_concat(Transform::from_row(a, b, c, d, e, f));
         Some(Rc::new((shading, transform)))
     }
 

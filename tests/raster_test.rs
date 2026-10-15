@@ -305,6 +305,38 @@ fn a_shading_pattern_fills_a_path() {
 }
 
 #[test]
+fn a_shading_pattern_inside_a_form_is_placed_in_the_form_s_space() {
+    // The form is moved 100 pt right; its pattern runs over x 0..200 of the form's space,
+    // which is 100..300 on the page.
+    let content = b"/Pattern cs /P0 scn 0 100 200 200 re f";
+    let form = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Matrix[1 0 0 1 100 0]\
+              /Resources<</Pattern<</P0<</PatternType 2/Shading<</ShadingType 2\
+              /ColorSpace/DeviceRGB/Coords[0 0 200 0]/Function {RED_TO_BLUE}/Extend[true true]>>\
+              >>>>>>/Length {}>>",
+            content.len()
+        ),
+        content,
+    );
+    let page = render(
+        &page_pdf_with_xobjects(A4, b"/Fm Do", vec![("Fm", form)]),
+        &PT,
+    );
+    assert!(
+        near(px(&page, 200, 842 - 200), [128, 0, 128]),
+        "{:?}",
+        px(&page, 200, 642)
+    );
+    assert!(
+        near(px(&page, 102, 842 - 200), RED),
+        "{:?}",
+        px(&page, 102, 642)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
 fn a_stitched_function_shades_each_part() {
     // Red to blue over the first half, then blue to green.
     let function = "<</FunctionType 3/Domain[0 1]/Bounds[0.5]/Encode[0 1 0 1]/Functions[\

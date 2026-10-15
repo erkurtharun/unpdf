@@ -631,8 +631,9 @@ pub trait PdfBackend: Send + Sync {
     }
 
     /// The shading pattern (`/PatternType 2`) the `/Pattern` resource `name` refers to in
-    /// `scope`, with its `/Matrix` (pattern space → the page's default space). `None` for a
-    /// tiling pattern, or a shading this does not read.
+    /// `scope`, with its `/Matrix` (pattern space → the default space of the page, or of the
+    /// form whose resources hold it). `None` for a tiling pattern, or a shading this does not
+    /// read.
     fn shading_pattern(&self, _scope: ResourceScope, _name: &[u8]) -> Option<(Shading, [f32; 6])> {
         None
     }
