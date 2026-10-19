@@ -8,7 +8,7 @@
 
 use tiny_skia::{
     BlendMode, Color, FillRule, FilterQuality, GradientStop, IntSize, LineCap, LineJoin,
-    LinearGradient, Mask, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, Point,
+    LinearGradient, Mask, MaskType, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, Point,
     RadialGradient, Rect, Shader, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use super::backend::{
     CodecParms, ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue,
-    RawXObject, Shading, ShadingGeometry, TilingPattern, Type3Font,
+    RawXObject, Shading, ShadingGeometry, SoftMask, SoftMaskEntry, TilingPattern, Type3Font,
 };
 use super::form_xobject;
 use super::png_encode::{self, PngColorType};
@@ -71,6 +71,10 @@ pub struct RasterGaps {
     /// shadings (type 1), a PostScript calculator function, and a tiling pattern nested more
     /// than three deep. Axial and radial shadings and tiling patterns are painted.
     pub shadings: u32,
+    /// Soft masks (`/SMask`) not applied as set: the mask group did not decode or is nested
+    /// past three deep (what follows is painted unmasked), or its `/TR` transfer function,
+    /// which this does not apply, was set (the mask is applied without it).
+    pub soft_masks: u32,
     /// Content streams of the page that could not be decoded; whatever they held is missing.
     pub undecodable_content_streams: u32,
 }
@@ -82,6 +86,7 @@ impl RasterGaps {
         self.images += other.images;
         self.inline_images += other.inline_images;
         self.shadings += other.shadings;
+        self.soft_masks += other.soft_masks;
         self.undecodable_content_streams += other.undecodable_content_streams;
     }
 
@@ -283,6 +288,10 @@ struct GState {
     stroke_alpha: f32,
     /// How what is painted combines with what is under it (`/BM`, ISO 32000-1 §11.3.5).
     blend: BlendMode,
+    /// The soft mask (`/SMask`, §11.6.5.2) in effect, as a coverage mask over the pixmap, and
+    /// the clip multiplied by it -- what painting is masked by while a soft mask is in effect.
+    soft_mask: Option<Rc<Mask>>,
+    masked_clip: Option<Rc<Mask>>,
     /// Whether the current fill/stroke color is a pattern.
     fill_pattern: bool,
     stroke_pattern: bool,
@@ -324,6 +333,8 @@ impl GState {
             fill_alpha: 1.0,
             stroke_alpha: 1.0,
             blend: BlendMode::SourceOver,
+            soft_mask: None,
+            masked_clip: None,
             fill_pattern: false,
             stroke_pattern: false,
             fill_pattern_paint: None,
@@ -548,6 +559,17 @@ impl Painter<'_> {
                         }
                         if let Some(mode) = gs.blend_mode {
                             self.state.blend = blend_mode(mode);
+                        }
+                        match &gs.soft_mask {
+                            Some(SoftMaskEntry::None) => {
+                                self.state.soft_mask = None;
+                                self.refresh_masked_clip();
+                            }
+                            Some(SoftMaskEntry::Mask(mask)) => {
+                                self.state.soft_mask = self.render_soft_mask(mask).map(Rc::new);
+                                self.refresh_masked_clip();
+                            }
+                            None => {}
                         }
                     }
                 }
@@ -1012,7 +1034,7 @@ impl Painter<'_> {
                     &source.paint(),
                     FillRule::Winding,
                     transform,
-                    self.state.clip.as_ref(),
+                    active_clip(&self.state),
                 ),
                 None => painted = false,
             }
@@ -1035,7 +1057,7 @@ impl Painter<'_> {
                     &paint,
                     &stroke,
                     Transform::identity(),
-                    self.state.clip.as_ref(),
+                    active_clip(&self.state),
                 );
             }
         }
@@ -1094,7 +1116,7 @@ impl Painter<'_> {
                         &source.paint(),
                         rule,
                         self.state.ctm,
-                        self.state.clip.as_ref(),
+                        active_clip(&self.state),
                     ),
                     None => self.gaps.shadings += 1,
                 }
@@ -1292,7 +1314,7 @@ impl Painter<'_> {
             return;
         };
         self.pixmap
-            .fill_rect(rect, &paint, transform, self.state.clip.as_ref());
+            .fill_rect(rect, &paint, transform, active_clip(&self.state));
     }
 
     fn stroke(&mut self, path: &Path, paint: &Paint) {
@@ -1323,7 +1345,7 @@ impl Painter<'_> {
             paint,
             &stroke,
             self.state.ctm,
-            self.state.clip.as_ref(),
+            active_clip(&self.state),
         );
     }
 
@@ -1332,6 +1354,7 @@ impl Painter<'_> {
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
         let Some(path) = path else {
             self.state.clip = Mask::new(w, h);
+            self.refresh_masked_clip();
             return;
         };
         match &mut self.state.clip {
@@ -1343,6 +1366,90 @@ impl Painter<'_> {
                 }
             }
         }
+        self.refresh_masked_clip();
+    }
+
+    /// Recompute what painting is masked by: the clip multiplied by the soft mask in effect
+    /// (nothing, when there is none).
+    fn refresh_masked_clip(&mut self) {
+        self.state.masked_clip = self.state.soft_mask.as_ref().map(|soft| {
+            let mut combined = (**soft).clone();
+            if let Some(clip) = &self.state.clip {
+                for (m, c) in combined.data_mut().iter_mut().zip(clip.data()) {
+                    *m = ((u16::from(*m) * u16::from(*c) + 127) / 255) as u8;
+                }
+            }
+            Rc::new(combined)
+        });
+    }
+
+    /// The soft mask `mask` makes, as coverage over the pixmap: its group painted with the
+    /// coordinate system in effect now (ISO 32000-1 §11.6.5.2), over its backdrop for a
+    /// luminosity mask, then read as luminosity or alpha. `None` -- and what follows painted
+    /// unmasked -- when the group cannot be painted.
+    fn render_soft_mask(&mut self, mask: &SoftMask) -> Option<Mask> {
+        const MAX_MASK_DEPTH: usize = 3;
+        if self.pattern_depth >= MAX_MASK_DEPTH {
+            self.gaps.soft_masks += 1;
+            return None;
+        }
+        let group = &mask.group;
+        let Some(ops) = group
+            .content
+            .as_deref()
+            .and_then(|data| self.backend.decode_content(data).ok())
+        else {
+            self.gaps.soft_masks += 1;
+            return None;
+        };
+        let m = group.matrix;
+        let to_device = self
+            .state
+            .ctm
+            .pre_concat(Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]));
+        let mut pixmap = Pixmap::new(self.pixmap.width(), self.pixmap.height())?;
+        if mask.luminosity {
+            let [r, g, b] = mask.backdrop;
+            if let Some(backdrop) =
+                Color::from_rgba(r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), 1.0)
+            {
+                pixmap.fill(backdrop);
+            }
+        }
+        let mut sub = Painter::new(self.backend, self.page, pixmap, to_device);
+        sub.current_form = Some(group.id);
+        sub.pattern_depth = self.pattern_depth + 1;
+        sub.glyph_depth = self.glyph_depth;
+        if let Some(b) = &group.bbox {
+            let rect = Rect::from_ltrb(
+                b.llx.min(b.urx),
+                b.lly.min(b.ury),
+                b.llx.max(b.urx),
+                b.lly.max(b.ury),
+            );
+            if let Some(rect) = rect {
+                sub.clip(Some(&PathBuilder::from_rect(rect)), FillRule::Winding);
+            }
+        }
+        let content = form_xobject::content_operations(self.backend, self.page, &ops, group.id);
+        sub.gaps.undecodable_content_streams += content.undecodable_streams as u32;
+        for op in &content.ops {
+            sub.apply(op);
+        }
+        sub.end_groups();
+        self.gaps.absorb(&sub.gaps);
+        self.substituted_text_runs += sub.substituted_text_runs;
+        if mask.transfer_function {
+            self.gaps.soft_masks += 1;
+        }
+        Some(Mask::from_pixmap(
+            sub.pixmap.as_ref(),
+            if mask.luminosity {
+                MaskType::Luminance
+            } else {
+                MaskType::Alpha
+            },
+        ))
     }
 
     fn draw_image(&mut self, image: &RawXObject) {
@@ -1371,7 +1478,7 @@ impl Painter<'_> {
             pixmap.as_ref(),
             &paint,
             transform,
-            self.state.clip.as_ref(),
+            active_clip(&self.state),
         );
     }
 
@@ -1605,6 +1712,14 @@ fn shading_paint(shading: &Shading, transform: Transform, alpha: f32) -> Option<
         anti_alias: true,
         ..Paint::default()
     })
+}
+
+/// What painting is clipped and masked by: the clip, times the soft mask when there is one.
+fn active_clip(state: &GState) -> Option<&Mask> {
+    match &state.masked_clip {
+        Some(masked) => Some(masked),
+        None => state.clip.as_ref(),
+    }
 }
 
 /// The rasterizer's blend mode for a PDF blend mode (ISO 32000-1 §11.3.5): the separable

@@ -1366,3 +1366,159 @@ fn a_form_painted_with_a_blend_mode_is_blended_as_one_group() {
     assert!(near(at_square(&page), [0, 0, 0]), "{:?}", at_square(&page));
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
+
+/// A page whose `/ExtGState` has `/Mk` (the soft mask `smask` describes, its group `/G` the
+/// form that paints `mask_content`) and `/Off` (`/SMask /None`), painting `content`.
+fn smask_page(smask: &str, mask_content: &[u8], content: &[u8]) -> Vec<u8> {
+    smask_page_in(smask, "", mask_content, content)
+}
+
+/// [`smask_page`] with `group` added to the mask form's `/Group` dictionary (its `/CS`).
+fn smask_page_in(smask: &str, group: &str, mask_content: &[u8], content: &[u8]) -> Vec<u8> {
+    assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Resources<</ExtGState<</Mk<</SMask\
+             <</Type/Mask{smask}/G 5 0 R>>>>/Off<</SMask/None>>>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Group<</S/Transparency{group}>>\
+                  /Length {}>>",
+                mask_content.len()
+            ),
+            mask_content,
+        ),
+    ])
+}
+
+/// Red over the whole page, painted under the soft mask `/Mk`.
+const RED_PAGE: &[u8] = b"/Mk gs 1 0 0 rg 0 0 595 842 re f";
+/// The mask group's shape: x 100..200, y 100..300.
+const IN_MASK: (u32, u32) = (150, 842 - 200);
+const OUT_OF_MASK: (u32, u32) = (400, 842 - 400);
+
+#[test]
+fn a_luminosity_soft_mask_shows_the_paint_where_its_group_is_light() {
+    let page = render(
+        &smask_page("/S/Luminosity", b"1 g 100 100 100 200 re f", RED_PAGE),
+        &PT,
+    );
+    assert!(near(px(&page, IN_MASK.0, IN_MASK.1), RED));
+    assert!(near(px(&page, OUT_OF_MASK.0, OUT_OF_MASK.1), WHITE));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_luminosity_soft_mask_is_as_strong_as_its_groups_luminosity() {
+    // Mid gray in the group: half of the red shows.
+    let page = render(
+        &smask_page("/S/Luminosity", b"0.5 g 100 100 100 200 re f", RED_PAGE),
+        &PT,
+    );
+    let got = px(&page, IN_MASK.0, IN_MASK.1);
+    assert!(
+        near(got, [255, 128, 128]) || near(got, [255, 127, 127]),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_luminosity_soft_mask_is_painted_over_its_backdrop() {
+    // The group is black where it paints and the backdrop (/BC) is white: the paint shows
+    // everywhere but under the group.
+    let page = render(
+        &smask_page_in(
+            "/S/Luminosity/BC[1]",
+            "/CS/DeviceGray",
+            b"0 g 100 100 100 200 re f",
+            RED_PAGE,
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, IN_MASK.0, IN_MASK.1), WHITE));
+    assert!(near(px(&page, OUT_OF_MASK.0, OUT_OF_MASK.1), RED));
+}
+
+#[test]
+fn a_backdrop_with_the_wrong_number_of_components_for_the_group_is_black() {
+    // One component for a group that has the page's (RGB) space: not a color of that space.
+    let page = render(
+        &smask_page("/S/Luminosity/BC[1]", b"0 g 100 100 100 200 re f", RED_PAGE),
+        &PT,
+    );
+    assert!(near(px(&page, OUT_OF_MASK.0, OUT_OF_MASK.1), WHITE));
+}
+
+#[test]
+fn an_alpha_soft_mask_shows_the_paint_where_its_group_paints_anything() {
+    // Black is opaque: the alpha mask does not care about the color.
+    let page = render(
+        &smask_page("/S/Alpha", b"0 g 100 100 100 200 re f", RED_PAGE),
+        &PT,
+    );
+    assert!(near(px(&page, IN_MASK.0, IN_MASK.1), RED));
+    assert!(near(px(&page, OUT_OF_MASK.0, OUT_OF_MASK.1), WHITE));
+}
+
+#[test]
+fn a_soft_mask_ends_with_none_and_with_the_graphics_state_that_set_it() {
+    let smask = smask_page(
+        "/S/Luminosity",
+        b"1 g 100 100 100 200 re f",
+        // Masked red; none; then red again at the right; the mask set in q ... Q is gone.
+        b"/Mk gs 1 0 0 rg 0 0 300 842 re f /Off gs 400 100 50 50 re f \
+          q /Mk gs Q 0 0 1 rg 450 300 50 50 re f",
+    );
+    let page = render(&smask, &PT);
+    assert!(near(px(&page, 425, 842 - 125), RED), "unmasked after /None");
+    assert!(
+        near(px(&page, 475, 842 - 325), [0, 0, 255]),
+        "unmasked after Q"
+    );
+    assert!(
+        near(px(&page, 250, 842 - 400), WHITE),
+        "masked red outside the group"
+    );
+}
+
+#[test]
+fn a_soft_mask_whose_group_does_not_decode_is_reported_and_paints_unmasked() {
+    let page = render(
+        &assemble(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            format!(
+                "<</Type/Page/Parent 2 0 R{A4}/Resources<</ExtGState<</Mk<</SMask\
+                 <</S/Luminosity/G 5 0 R>>>>>>>>/Contents 4 0 R>>"
+            )
+            .into_bytes(),
+            stream_object(&format!("<</Length {}>>", RED_PAGE.len()), RED_PAGE),
+            stream_object(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Filter/FlateDecode/Length 4>>",
+                b"nope",
+            ),
+        ]),
+        &PT,
+    );
+    assert_eq!(page.gaps.soft_masks, 1, "{:?}", page.gaps);
+    assert!(near(px(&page, OUT_OF_MASK.0, OUT_OF_MASK.1), RED));
+}
+
+#[test]
+fn a_transfer_function_is_reported_and_the_mask_applied_without_it() {
+    let page = render(
+        &smask_page(
+            "/S/Luminosity/TR/Custom",
+            b"1 g 100 100 100 200 re f",
+            RED_PAGE,
+        ),
+        &PT,
+    );
+    assert_eq!(page.gaps.soft_masks, 1, "{:?}", page.gaps);
+    assert!(near(px(&page, IN_MASK.0, IN_MASK.1), RED));
+    assert!(near(px(&page, OUT_OF_MASK.0, OUT_OF_MASK.1), WHITE));
+}

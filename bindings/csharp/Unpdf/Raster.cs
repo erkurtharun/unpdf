@@ -50,6 +50,12 @@ public sealed class RenderGaps
     [JsonPropertyName("shadings")]
     public uint Shadings { get; init; }
 
+    /// <summary>Soft masks not applied as set: the mask group did not decode or is nested more
+    /// than three deep (what follows is painted unmasked), or the mask names a transfer function
+    /// the renderer does not apply (the mask is applied without it).</summary>
+    [JsonPropertyName("soft_masks")]
+    public uint SoftMasks { get; init; }
+
     /// <summary>Content streams of the page that could not be decoded.</summary>
     [JsonPropertyName("undecodable_content_streams")]
     public uint UndecodableContentStreams { get; init; }
@@ -58,7 +64,7 @@ public sealed class RenderGaps
     [JsonIgnore]
     public bool IsEmpty =>
         TextRuns == 0 && Images == 0 && InlineImages == 0 && Shadings == 0
-        && UndecodableContentStreams == 0;
+        && SoftMasks == 0 && UndecodableContentStreams == 0;
 }
 
 /// <summary>A rendered page: a PNG, its size in pixels, and what it could not show.</summary>

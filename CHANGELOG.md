@@ -18,6 +18,16 @@
   (ISO 32000-1 §11.3.5, all 16 modes, separable and non-separable), a form painted under a
   blend mode is blended as one group, and the mode is part of the saved graphics state.
 
+- **A page is rendered with the soft masks it sets.** The `/SMask` entry of an `/ExtGState`
+  was ignored, so what a mask hides was painted in full: a drop shadow that fades out was a
+  solid block, a vignette or a feathered image edge was not feathered. The mask group is
+  painted in the coordinate system in effect where the mask is set and read as luminosity
+  over its `/BC` backdrop (black unless `/BC` has the components of the group's color space)
+  or as alpha (ISO 32000-1 §11.6.5.2); what is painted afterwards is masked by it until
+  `/SMask /None` or the end of the graphics state that set it. On hand-built pages the result
+  matches MuPDF pixel for pixel. A mask whose group cannot be painted, or that names a
+  `/TR` transfer function (not applied), is counted in the new `gaps.soft_masks`.
+
 ### Changed
 
 - **Python: `Document` opens the PDF instead of extracting it**, so counting and rendering

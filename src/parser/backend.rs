@@ -469,9 +469,36 @@ impl BlendMode {
     }
 }
 
+/// A soft mask (`/SMask` dictionary, ISO 32000-1 §11.6.5.2): a group whose luminosity or
+/// alpha says how much of what is painted afterwards shows.
+#[derive(Debug, Clone)]
+pub struct SoftMask {
+    /// `/S /Luminosity` (the group's luminosity over its backdrop is the mask) rather than
+    /// `/S /Alpha` (the group's alpha is).
+    pub luminosity: bool,
+    /// `/G`: the transparency group that is the mask.
+    pub group: FormXObject,
+    /// `/BC`: the backdrop a luminosity mask's group is painted over, as RGB (black when
+    /// absent).
+    pub backdrop: [f32; 3],
+    /// `/TR` names a transfer function other than `/Identity`; this reader does not apply it.
+    pub transfer_function: bool,
+}
+
+/// What an `/ExtGState` says about the soft mask (`/SMask`).
+#[derive(Debug, Clone)]
+pub enum SoftMaskEntry {
+    /// `/SMask /None`: no soft mask.
+    None,
+    /// A soft mask dictionary.
+    Mask(SoftMask),
+}
+
 /// What a page's rasterizer needs from an `/ExtGState` resource (ISO 32000-1 §8.4.5).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ExtGState {
+    /// `/SMask`: the soft mask in effect from now on.
+    pub soft_mask: Option<SoftMaskEntry>,
     /// `/LW`.
     pub line_width: Option<f32>,
     /// `/BM`: the blend mode. A name, or an array of names of which the first one this knows
@@ -1154,20 +1181,7 @@ impl PdfBackend for RawBackend {
         let stream = self.doc.resolve(self.doc.get_object(id)?).as_stream()?;
         let subtype = raw_dict_get(&stream.dict, b"Subtype").and_then(|s| s.as_name());
         Some(match subtype {
-            Some(b"Form") => PaintedXObject::Form(FormXObject {
-                id,
-                matrix: raw_dict_get(&stream.dict, b"Matrix")
-                    .and_then(|m| matrix_from(&self.doc, m))
-                    .unwrap_or(IDENTITY_MATRIX),
-                bbox: raw_dict_get(&stream.dict, b"BBox")
-                    .and_then(|b| page_box_from_array(&self.doc, b)),
-                content: raw_stream::decompress(stream).ok(),
-                transparency_group: raw_dict_get(&stream.dict, b"Group")
-                    .and_then(|g| raw_resolve_dict(&self.doc, g))
-                    .and_then(|g| raw_dict_get(g, b"S"))
-                    .and_then(|s| self.doc.resolve(s).as_name())
-                    .is_some_and(|s| s == b"Transparency"),
-            }),
+            Some(b"Form") => PaintedXObject::Form(form_of(&self.doc, id, stream)),
             Some(b"Image") => PaintedXObject::Image,
             _ => PaintedXObject::Other,
         })
@@ -1324,7 +1338,55 @@ impl PdfBackend for RawBackend {
                         .find_map(|n| self.doc.resolve(n).as_name().and_then(BlendMode::from_name))
                 }),
             });
+        let soft_mask = raw_dict_get(dict, b"SMask").and_then(|v| {
+            let v = self.doc.resolve(v);
+            if v.as_name() == Some(b"None".as_slice()) {
+                return Some(SoftMaskEntry::None);
+            }
+            let mask = raw_resolve_dict(&self.doc, v)?;
+            let group_ref = raw_dict_get(mask, b"G")?.as_reference()?;
+            let stream = self
+                .doc
+                .resolve(self.doc.get_object(group_ref)?)
+                .as_stream()?;
+            let luminosity = raw_dict_get(mask, b"S")
+                .and_then(|s| self.doc.resolve(s).as_name())
+                .is_some_and(|s| s == b"Luminosity");
+            // `/BC` is in the group's color space: it counts only when it has that space's
+            // components (a group without a `/CS` has the page's, taken as RGB); otherwise
+            // the backdrop is black.
+            let components = group_components(&self.doc, stream);
+            let backdrop = raw_dict_get(mask, b"BC")
+                .and_then(|bc| self.doc.resolve(bc).as_array())
+                .map(|items| {
+                    let parts: Vec<f32> = items
+                        .iter()
+                        .filter_map(|n| self.doc.resolve(n).as_f32())
+                        .collect();
+                    match (parts.len() == components, &parts[..]) {
+                        (true, &[g]) => [g, g, g],
+                        (true, &[r, g, b]) => [r, g, b],
+                        (true, &[c, m, y, k]) => [
+                            (1.0 - c) * (1.0 - k),
+                            (1.0 - m) * (1.0 - k),
+                            (1.0 - y) * (1.0 - k),
+                        ],
+                        _ => [0.0; 3],
+                    }
+                })
+                .unwrap_or([0.0; 3]);
+            let transfer_function = raw_dict_get(mask, b"TR")
+                .map(|t| self.doc.resolve(t))
+                .is_some_and(|t| t.as_name() != Some(b"Identity".as_slice()));
+            Some(SoftMaskEntry::Mask(SoftMask {
+                luminosity,
+                group: form_of(&self.doc, group_ref, stream),
+                backdrop,
+                transfer_function,
+            }))
+        });
         Some(ExtGState {
+            soft_mask,
             line_width: number(b"LW"),
             blend_mode,
             stroke_alpha: number(b"CA"),
@@ -1676,6 +1738,64 @@ impl RawBackend {
 const IDENTITY_MATRIX: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
 
 /// A six-number matrix array (`/Matrix [a b c d e f]`).
+/// How many components the color space of a transparency group has: its `/Group` `/CS`
+/// (1 for a gray space, 3 for RGB, 4 for CMYK, an ICC profile's `/N`), or 3 -- the page's
+/// space, taken as RGB -- when it names none.
+fn group_components(doc: &RawDocument, form: &super::raw::tokenizer::PdfStream) -> usize {
+    let space = raw_dict_get(&form.dict, b"Group")
+        .and_then(|g| raw_resolve_dict(doc, g))
+        .and_then(|g| raw_dict_get(g, b"CS"))
+        .map(|cs| doc.resolve(cs));
+    let family = |name: &[u8]| match name {
+        b"DeviceGray" | b"CalGray" | b"G" => Some(1),
+        b"DeviceRGB" | b"CalRGB" | b"RGB" => Some(3),
+        b"DeviceCMYK" | b"CMYK" => Some(4),
+        _ => None,
+    };
+    match space {
+        None => 3,
+        Some(space) => match space.as_name() {
+            Some(name) => family(name).unwrap_or(3),
+            None => space
+                .as_array()
+                .and_then(|items| {
+                    let first = doc.resolve(items.first()?).as_name()?;
+                    if first == b"ICCBased" {
+                        let profile = doc.resolve(items.get(1)?).as_stream()?;
+                        let n = raw_dict_get(&profile.dict, b"N")
+                            .and_then(|n| doc.resolve(n).as_f32())?;
+                        Some(n as usize)
+                    } else {
+                        family(first)
+                    }
+                })
+                .unwrap_or(3),
+        },
+    }
+}
+
+/// The form XObject a stream is: its matrix, box, decoded content and whether it is a
+/// transparency group.
+fn form_of(
+    doc: &RawDocument,
+    id: ObjectId,
+    stream: &super::raw::tokenizer::PdfStream,
+) -> FormXObject {
+    FormXObject {
+        id,
+        matrix: raw_dict_get(&stream.dict, b"Matrix")
+            .and_then(|m| matrix_from(doc, m))
+            .unwrap_or(IDENTITY_MATRIX),
+        bbox: raw_dict_get(&stream.dict, b"BBox").and_then(|b| page_box_from_array(doc, b)),
+        content: raw_stream::decompress(stream).ok(),
+        transparency_group: raw_dict_get(&stream.dict, b"Group")
+            .and_then(|g| raw_resolve_dict(doc, g))
+            .and_then(|g| raw_dict_get(g, b"S"))
+            .and_then(|s| doc.resolve(s).as_name())
+            .is_some_and(|s| s == b"Transparency"),
+    }
+}
+
 fn matrix_from(doc: &RawDocument, obj: &RawPdfObject) -> Option<[f32; 6]> {
     let RawPdfObject::Array(items) = doc.resolve(obj) else {
         return None;

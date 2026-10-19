@@ -377,7 +377,8 @@ uint8_t* unpdf_get_resource_data(const UnpdfDocument* doc,
  * @param options_json NULL, or {"dpi": 150, "region": "crop" | "media"}.
  * @param out_len Receives the PNG length in bytes.
  * @param out_info NULL, or receives {"width":N,"height":N,"gaps":{"text_runs":N,
- *        "images":N,"inline_images":N,"shadings":N,"undecodable_content_streams":N}}
+ *        "images":N,"inline_images":N,"shadings":N,"soft_masks":N,
+ *        "undecodable_content_streams":N}}
  *        (must be freed with unpdf_free_string).
  * @return PNG bytes (must be freed with unpdf_free_bytes), or NULL on error
  *         (PageOutOfRange, Render, InvalidArgument).
