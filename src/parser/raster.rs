@@ -7,9 +7,9 @@
 //! way extraction counts what it could not read: the rest of the page is still painted.
 
 use tiny_skia::{
-    Color, FillRule, FilterQuality, GradientStop, IntSize, LineCap, LineJoin, LinearGradient, Mask,
-    Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader,
-    SpreadMode, Stroke, StrokeDash, Transform,
+    BlendMode, Color, FillRule, FilterQuality, GradientStop, IntSize, LineCap, LineJoin,
+    LinearGradient, Mask, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, Point,
+    RadialGradient, Rect, Shader, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use std::collections::HashMap;
@@ -281,6 +281,8 @@ struct GState {
     stroke_space: PaintSpace,
     fill_alpha: f32,
     stroke_alpha: f32,
+    /// How what is painted combines with what is under it (`/BM`, ISO 32000-1 §11.3.5).
+    blend: BlendMode,
     /// Whether the current fill/stroke color is a pattern.
     fill_pattern: bool,
     stroke_pattern: bool,
@@ -321,6 +323,7 @@ impl GState {
             stroke_space: PaintSpace::Gray,
             fill_alpha: 1.0,
             stroke_alpha: 1.0,
+            blend: BlendMode::SourceOver,
             fill_pattern: false,
             stroke_pattern: false,
             fill_pattern_paint: None,
@@ -367,7 +370,7 @@ struct Painter<'a> {
     /// The transparency groups being painted, innermost last: for one painted on a layer of
     /// its own, the pixmap underneath it and the alpha it is composited with; `None` for one
     /// painted in place.
-    groups: Vec<Option<(Pixmap, f32)>>,
+    groups: Vec<Option<(Pixmap, f32, BlendMode)>>,
     /// Painting a shape that takes its color from outside: a Type 3 glyph procedure that
     /// began with `d1`, or the cell of an uncolored tiling pattern. Its own color operators
     /// are ignored.
@@ -392,15 +395,16 @@ enum PatternPaint {
 /// not hold the painter borrowed.
 enum PaintSource {
     Ready(Paint<'static>),
-    /// A tiling pattern's cell, with its pixels → the space the drawing is in.
-    Tile(Rc<PatternPaint>, Transform, f32),
+    /// A tiling pattern's cell, with its pixels → the space the drawing is in, its alpha and
+    /// how it is blended.
+    Tile(Rc<PatternPaint>, Transform, f32, BlendMode),
 }
 
 impl PaintSource {
     fn paint(&self) -> Paint<'_> {
         match self {
             PaintSource::Ready(paint) => paint.clone(),
-            PaintSource::Tile(tile, transform, alpha) => {
+            PaintSource::Tile(tile, transform, alpha, blend_mode) => {
                 let PatternPaint::Tile(pixmap, _) = &**tile else {
                     unreachable!("a tile source holds a tile");
                 };
@@ -413,6 +417,7 @@ impl PaintSource {
                         *transform,
                     ),
                     anti_alias: true,
+                    blend_mode: *blend_mode,
                     ..Paint::default()
                 }
             }
@@ -540,6 +545,9 @@ impl Painter<'_> {
                         }
                         if let Some(a) = gs.fill_alpha {
                             self.state.fill_alpha = a.clamp(0.0, 1.0);
+                        }
+                        if let Some(mode) = gs.blend_mode {
+                            self.state.blend = blend_mode(mode);
                         }
                     }
                 }
@@ -938,24 +946,27 @@ impl Painter<'_> {
     }
 
     /// A transparency group begins (ISO 32000-1 §11.6.6). A group painted with an alpha below
-    /// one goes on a layer of its own, which is composited with that alpha when it ends -- so
-    /// overlapping things inside it do not show through one another, and an alpha the group
-    /// sets inside itself does not undo the one it is painted with. Inside, the alpha starts
-    /// at one. A fully opaque group is painted in place, which is the same picture; so is one
-    /// nested past `MAX_GROUP_LAYERS`, to bound the memory layers take.
+    /// one, or with a blend mode, goes on a layer of its own, which is composited with that
+    /// alpha and blend mode when it ends -- so overlapping things inside it do not show
+    /// through one another, and an alpha the group sets inside itself does not undo the one
+    /// it is painted with. Inside, the alpha starts at one and the blend mode at Normal. A
+    /// fully opaque, normally blended group is painted in place, which is the same picture;
+    /// so is one nested past `MAX_GROUP_LAYERS`, to bound the memory layers take.
     fn begin_group(&mut self) {
         const MAX_GROUP_LAYERS: usize = 4;
         let alpha = self.state.fill_alpha;
+        let blend = self.state.blend;
         let layered = self.groups.iter().filter(|g| g.is_some()).count();
-        let layer = (alpha < 1.0 && layered < MAX_GROUP_LAYERS)
+        let layer = ((alpha < 1.0 || blend != BlendMode::SourceOver) && layered < MAX_GROUP_LAYERS)
             .then(|| Pixmap::new(self.pixmap.width(), self.pixmap.height()))
             .flatten();
         match layer {
             Some(layer) => {
                 let under = std::mem::replace(&mut self.pixmap, layer);
-                self.groups.push(Some((under, alpha)));
+                self.groups.push(Some((under, alpha, blend)));
                 self.state.fill_alpha = 1.0;
                 self.state.stroke_alpha = 1.0;
+                self.state.blend = BlendMode::SourceOver;
             }
             None => self.groups.push(None),
         }
@@ -964,7 +975,7 @@ impl Painter<'_> {
     /// The innermost transparency group ends: its layer, if it has one, is composited onto
     /// what is underneath with the group's alpha.
     fn end_group(&mut self) {
-        if let Some(Some((under, alpha))) = self.groups.pop() {
+        if let Some(Some((under, alpha, blend))) = self.groups.pop() {
             let group = std::mem::replace(&mut self.pixmap, under);
             self.pixmap.draw_pixmap(
                 0,
@@ -972,6 +983,7 @@ impl Painter<'_> {
                 group.as_ref(),
                 &PixmapPaint {
                     opacity: alpha,
+                    blend_mode: blend,
                     ..PixmapPaint::default()
                 },
                 Transform::identity(),
@@ -1226,20 +1238,26 @@ impl Painter<'_> {
         } else {
             (s.fill_pattern, &s.fill_pattern_paint, s.fill, s.fill_alpha)
         };
+        let blend = s.blend;
         if !pattern {
-            return Some(PaintSource::Ready(solid(color, alpha)));
+            let mut paint = solid(color, alpha);
+            paint.blend_mode = blend;
+            return Some(PaintSource::Ready(paint));
         }
         let pattern_paint = pattern_paint.as_ref()?;
         let to_path = path_transform.invert()?;
         match &**pattern_paint {
             PatternPaint::Shading(shading, to_device) => {
-                shading_paint(shading, to_path.pre_concat(*to_device), alpha)
-                    .map(PaintSource::Ready)
+                shading_paint(shading, to_path.pre_concat(*to_device), alpha).map(|mut paint| {
+                    paint.blend_mode = blend;
+                    PaintSource::Ready(paint)
+                })
             }
             PatternPaint::Tile(_, to_device) => Some(PaintSource::Tile(
                 pattern_paint.clone(),
                 to_path.pre_concat(*to_device),
                 alpha,
+                blend,
             )),
         }
     }
@@ -1265,7 +1283,10 @@ impl Painter<'_> {
                 )
             }
         };
-        let paint = shading_paint(shading, shader_transform, self.state.fill_alpha);
+        let paint = shading_paint(shading, shader_transform, self.state.fill_alpha).map(|mut p| {
+            p.blend_mode = self.state.blend;
+            p
+        });
         let (Some(rect), Some(paint)) = (rect, paint) else {
             self.gaps.shadings += 1;
             return;
@@ -1341,8 +1362,8 @@ impl Painter<'_> {
         let transform = self.state.ctm.pre_concat(to_unit);
         let paint = PixmapPaint {
             opacity: self.state.fill_alpha,
+            blend_mode: self.state.blend,
             quality: FilterQuality::Bilinear,
-            ..PixmapPaint::default()
         };
         self.pixmap.draw_pixmap(
             0,
@@ -1584,6 +1605,30 @@ fn shading_paint(shading: &Shading, transform: Transform, alpha: f32) -> Option<
         anti_alias: true,
         ..Paint::default()
     })
+}
+
+/// The rasterizer's blend mode for a PDF blend mode (ISO 32000-1 §11.3.5): the separable
+/// ones (§11.3.5.2) and the non-separable ones (§11.3.5.3) are the same set tiny-skia has.
+fn blend_mode(mode: super::backend::BlendMode) -> BlendMode {
+    use super::backend::BlendMode as Pdf;
+    match mode {
+        Pdf::Normal => BlendMode::SourceOver,
+        Pdf::Multiply => BlendMode::Multiply,
+        Pdf::Screen => BlendMode::Screen,
+        Pdf::Overlay => BlendMode::Overlay,
+        Pdf::Darken => BlendMode::Darken,
+        Pdf::Lighten => BlendMode::Lighten,
+        Pdf::ColorDodge => BlendMode::ColorDodge,
+        Pdf::ColorBurn => BlendMode::ColorBurn,
+        Pdf::HardLight => BlendMode::HardLight,
+        Pdf::SoftLight => BlendMode::SoftLight,
+        Pdf::Difference => BlendMode::Difference,
+        Pdf::Exclusion => BlendMode::Exclusion,
+        Pdf::Hue => BlendMode::Hue,
+        Pdf::Saturation => BlendMode::Saturation,
+        Pdf::Color => BlendMode::Color,
+        Pdf::Luminosity => BlendMode::Luminosity,
+    }
 }
 
 fn solid(color: Rgb, alpha: f32) -> Paint<'static> {

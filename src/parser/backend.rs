@@ -421,11 +421,62 @@ pub struct FontProgram {
     pub stand_in: bool,
 }
 
+/// A blend mode (ISO 32000-1 §11.3.5): how what is painted combines with what is under it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BlendMode {
+    /// `/Normal` (and `/Compatible`): the paint replaces what is under it.
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl BlendMode {
+    /// The blend mode a name stands for; `None` for a name that is not one.
+    pub fn from_name(name: &[u8]) -> Option<Self> {
+        Some(match name {
+            b"Normal" | b"Compatible" => Self::Normal,
+            b"Multiply" => Self::Multiply,
+            b"Screen" => Self::Screen,
+            b"Overlay" => Self::Overlay,
+            b"Darken" => Self::Darken,
+            b"Lighten" => Self::Lighten,
+            b"ColorDodge" => Self::ColorDodge,
+            b"ColorBurn" => Self::ColorBurn,
+            b"HardLight" => Self::HardLight,
+            b"SoftLight" => Self::SoftLight,
+            b"Difference" => Self::Difference,
+            b"Exclusion" => Self::Exclusion,
+            b"Hue" => Self::Hue,
+            b"Saturation" => Self::Saturation,
+            b"Color" => Self::Color,
+            b"Luminosity" => Self::Luminosity,
+            _ => return None,
+        })
+    }
+}
+
 /// What a page's rasterizer needs from an `/ExtGState` resource (ISO 32000-1 §8.4.5).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ExtGState {
     /// `/LW`.
     pub line_width: Option<f32>,
+    /// `/BM`: the blend mode. A name, or an array of names of which the first one this knows
+    /// applies (§11.6.3); `None` when the entry is absent or names no mode this knows.
+    pub blend_mode: Option<BlendMode>,
     /// `/CA`: stroking opacity.
     pub stroke_alpha: Option<f32>,
     /// `/ca`: non-stroking opacity.
@@ -1263,8 +1314,19 @@ impl PdfBackend for RawBackend {
                 .map(|v| self.doc.resolve(v))
                 .and_then(|v| v.as_f32())
         };
+        let blend_mode = raw_dict_get(dict, b"BM")
+            .map(|v| self.doc.resolve(v))
+            .and_then(|v| match v.as_name() {
+                Some(name) => BlendMode::from_name(name),
+                None => v.as_array().and_then(|names| {
+                    names
+                        .iter()
+                        .find_map(|n| self.doc.resolve(n).as_name().and_then(BlendMode::from_name))
+                }),
+            });
         Some(ExtGState {
             line_width: number(b"LW"),
+            blend_mode,
             stroke_alpha: number(b"CA"),
             fill_alpha: number(b"ca"),
         })

@@ -10,6 +10,14 @@
   options given at open. `unpdf_page_count` counts the pages in the page tree -- every page,
   whatever `pages` selects -- and needs no extraction, nor does `unpdf_render_page`.
 
+- **A page is rendered with the blend modes it sets.** The `/BM` entry of an `/ExtGState`
+  (a name, or an array of names of which the first one known applies) was ignored, so
+  every paint covered what was under it: a `Multiply` highlight laid over text hid the text
+  in the rendered page, which a reader of the image (OCR, a vision model) then could not
+  read. Paths, glyphs, shadings, tiling patterns and images are drawn with the mode in force
+  (ISO 32000-1 §11.3.5, all 16 modes, separable and non-separable), a form painted under a
+  blend mode is blended as one group, and the mode is part of the saved graphics state.
+
 ### Changed
 
 - **Python: `Document` opens the PDF instead of extracting it**, so counting and rendering

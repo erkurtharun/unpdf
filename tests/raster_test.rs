@@ -1249,3 +1249,120 @@ fn the_crop_box_is_painted_unless_the_media_box_is_asked_for() {
     );
     assert_eq!((media.width, media.height), (595, 842));
 }
+
+/// A page whose `/ExtGState` resource `/M` carries `entry` (a `/BM` value) and whose content
+/// is `content`; the form `/Fm` (when `content` paints it) fills x 100..200, y 100..200 yellow.
+fn blend_page(entry: &str, content: &[u8]) -> Vec<u8> {
+    let form = b"1 1 0 rg 100 100 100 100 re f";
+    assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        format!(
+            "<</Type/Page/Parent 2 0 R{A4}/Resources<</XObject<</Fm 5 0 R>>\
+             /ExtGState<</M<</BM{entry}>>>>>>/Contents 4 0 R>>"
+        )
+        .into_bytes(),
+        stream_object(&format!("<</Length {}>>", content.len()), content),
+        stream_object(
+            &format!(
+                "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Group<</S/Transparency>>\
+                  /Length {}>>",
+                form.len()
+            ),
+            form,
+        ),
+    ])
+}
+
+/// Where the squares of the blend tests are painted.
+fn at_square(page: &RasteredPage) -> [u8; 3] {
+    px(page, 150, 842 - 150)
+}
+
+const YELLOW_OVER: &[u8] = b"/M gs 1 1 0 rg 100 100 100 100 re f";
+
+#[test]
+fn a_multiply_highlight_leaves_the_text_under_it_dark() {
+    // Black underneath, a yellow rectangle multiplied over it: black stays black. Painted
+    // as Normal it would cover it.
+    let under = b"0 g 100 100 100 100 re f ";
+    let content = [under.as_slice(), YELLOW_OVER].concat();
+    let page = render(&blend_page("/Multiply", &content), &PT);
+    assert!(near(at_square(&page), [0, 0, 0]), "{:?}", at_square(&page));
+    let page = render(&blend_page("/Normal", &content), &PT);
+    assert!(
+        near(at_square(&page), [255, 255, 0]),
+        "{:?}",
+        at_square(&page)
+    );
+    // Over white, multiplying by yellow is yellow.
+    let page = render(&blend_page("/Multiply", YELLOW_OVER), &PT);
+    assert!(
+        near(at_square(&page), [255, 255, 0]),
+        "{:?}",
+        at_square(&page)
+    );
+}
+
+#[test]
+fn the_separable_and_non_separable_modes_combine_as_the_standard_says() {
+    // Red underneath, then a rectangle in a blend mode. The results are §11.3.5's formulas
+    // on (1,0,0) and the source (1,1,0) / (0,0,1).
+    let red = b"1 0 0 rg 100 100 100 100 re f ";
+    let cases: [(&str, &[u8], [u8; 3]); 5] = [
+        // Screen: 1 - (1-cb)(1-cs)
+        ("/Screen", b"0 0 1 rg", [255, 0, 255]),
+        // Darken: min
+        ("/Darken", b"1 1 0 rg", [255, 0, 0]),
+        // Lighten: max
+        ("/Lighten", b"1 1 0 rg", [255, 255, 0]),
+        // Difference: |cb - cs|
+        ("/Difference", b"1 1 0 rg", [0, 255, 0]),
+        // Exclusion: cb + cs - 2 cb cs
+        ("/Exclusion", b"0 0 1 rg", [255, 0, 255]),
+    ];
+    for (mode, color, expected) in cases {
+        let content = [red.as_slice(), b"/M gs ", color, b" 100 100 100 100 re f"].concat();
+        let page = render(&blend_page(mode, &content), &PT);
+        assert!(
+            near(at_square(&page), expected),
+            "{mode}: {:?}, want {expected:?}",
+            at_square(&page)
+        );
+    }
+}
+
+#[test]
+fn a_blend_mode_array_applies_its_first_known_name() {
+    let under = b"0 g 100 100 100 100 re f ";
+    let content = [under.as_slice(), YELLOW_OVER].concat();
+    let page = render(&blend_page("[/NotAMode/Multiply/Screen]", &content), &PT);
+    assert!(near(at_square(&page), [0, 0, 0]), "{:?}", at_square(&page));
+    // A name no mode goes by leaves the paint Normal.
+    let page = render(&blend_page("/NotAMode", &content), &PT);
+    assert!(
+        near(at_square(&page), [255, 255, 0]),
+        "{:?}",
+        at_square(&page)
+    );
+}
+
+#[test]
+fn a_blend_mode_is_part_of_the_graphics_state() {
+    // Set inside q ... Q it ends with the Q: the second rectangle is Normal.
+    let content = b"0 g 100 100 100 100 re f q /M gs 1 1 0 rg 100 100 50 100 re f Q \
+                    1 1 0 rg 150 100 50 100 re f";
+    let page = render(&blend_page("/Multiply", content), &PT);
+    assert!(near(px(&page, 125, 842 - 150), [0, 0, 0]));
+    assert!(near(px(&page, 175, 842 - 150), [255, 255, 0]));
+}
+
+#[test]
+fn a_form_painted_with_a_blend_mode_is_blended_as_one_group() {
+    // The form paints yellow in Normal (its own state starts Normal); the group is multiplied
+    // onto the black under it.
+    let content = b"0 g 100 100 100 100 re f /M gs /Fm Do";
+    let page = render(&blend_page("/Multiply", content), &PT);
+    assert!(near(at_square(&page), [0, 0, 0]), "{:?}", at_square(&page));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
