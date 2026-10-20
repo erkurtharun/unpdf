@@ -1725,24 +1725,23 @@ fn active_clip(state: &GState) -> Option<&Mask> {
 /// The rasterizer's blend mode for a PDF blend mode (ISO 32000-1 §11.3.5): the separable
 /// ones (§11.3.5.2) and the non-separable ones (§11.3.5.3) are the same set tiny-skia has.
 fn blend_mode(mode: super::backend::BlendMode) -> BlendMode {
-    use super::backend::BlendMode as Pdf;
     match mode {
-        Pdf::Normal => BlendMode::SourceOver,
-        Pdf::Multiply => BlendMode::Multiply,
-        Pdf::Screen => BlendMode::Screen,
-        Pdf::Overlay => BlendMode::Overlay,
-        Pdf::Darken => BlendMode::Darken,
-        Pdf::Lighten => BlendMode::Lighten,
-        Pdf::ColorDodge => BlendMode::ColorDodge,
-        Pdf::ColorBurn => BlendMode::ColorBurn,
-        Pdf::HardLight => BlendMode::HardLight,
-        Pdf::SoftLight => BlendMode::SoftLight,
-        Pdf::Difference => BlendMode::Difference,
-        Pdf::Exclusion => BlendMode::Exclusion,
-        Pdf::Hue => BlendMode::Hue,
-        Pdf::Saturation => BlendMode::Saturation,
-        Pdf::Color => BlendMode::Color,
-        Pdf::Luminosity => BlendMode::Luminosity,
+        super::backend::BlendMode::Normal => BlendMode::SourceOver,
+        super::backend::BlendMode::Multiply => BlendMode::Multiply,
+        super::backend::BlendMode::Screen => BlendMode::Screen,
+        super::backend::BlendMode::Overlay => BlendMode::Overlay,
+        super::backend::BlendMode::Darken => BlendMode::Darken,
+        super::backend::BlendMode::Lighten => BlendMode::Lighten,
+        super::backend::BlendMode::ColorDodge => BlendMode::ColorDodge,
+        super::backend::BlendMode::ColorBurn => BlendMode::ColorBurn,
+        super::backend::BlendMode::HardLight => BlendMode::HardLight,
+        super::backend::BlendMode::SoftLight => BlendMode::SoftLight,
+        super::backend::BlendMode::Difference => BlendMode::Difference,
+        super::backend::BlendMode::Exclusion => BlendMode::Exclusion,
+        super::backend::BlendMode::Hue => BlendMode::Hue,
+        super::backend::BlendMode::Saturation => BlendMode::Saturation,
+        super::backend::BlendMode::Color => BlendMode::Color,
+        super::backend::BlendMode::Luminosity => BlendMode::Luminosity,
     }
 }
 
