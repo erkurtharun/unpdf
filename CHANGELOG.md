@@ -9,6 +9,16 @@
   first time something asks for it, and `PageCount` (the page tree, whatever `ParseOptions` selects)
   and `RenderPage` need no extraction.
 
+### Fixed
+
+- **A page's pictures keep their transparency when the image's own soft mask is a JPEG or has
+  a size of its own.** An image's `/SMask` was applied only when it was a raw gray image of the
+  picture's exact size; a mask coded as `DCTDecode` (what many PDF producers write for a cut-out
+  photograph) or sampled at another resolution was dropped, so the part of the picture the mask
+  hides was painted in full -- in the rendered page a product photo arrived with a solid black
+  rectangle where its background should be transparent. The mask now covers the picture's
+  square at any resolution (ISO 32000-1 §11.6.5.3).
+
 ## 0.47.0 — 2026-10-20
 
 ### Added

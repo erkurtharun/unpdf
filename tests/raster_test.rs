@@ -492,6 +492,79 @@ fn a_jpeg_image_is_decoded() {
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
 
+/// A page drawing the 4 x 2 red JPEG over x 50..250, y 50..150 with `/SMask` object `mask`
+/// (the second XObject, object 6).
+fn masked_jpeg_page(mask: Vec<u8>) -> RasteredPage {
+    let jpeg = include_bytes!("fixtures/solid_red_4x2.jpg");
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 4/Height 2/ColorSpace/DeviceRGB\
+              /BitsPerComponent 8/Filter/DCTDecode/SMask 6 0 R/Length {}>>",
+            jpeg.len()
+        ),
+        jpeg,
+    );
+    render(
+        &page_pdf_with_xobjects(
+            A4,
+            b"q 200 0 0 100 50 50 cm /J Do Q",
+            vec![("J", image), ("M", mask)],
+        ),
+        &PT,
+    )
+}
+
+#[test]
+fn an_image_soft_mask_coded_as_a_jpeg_is_applied() {
+    // White on the left half, black on the right: the right half of the image is not drawn.
+    let jpeg = include_bytes!("fixtures/halves_white_black_4x2_gray.jpg");
+    let mask = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 4/Height 2/ColorSpace/DeviceGray\
+              /BitsPerComponent 8/Filter/DCTDecode/Length {}>>",
+            jpeg.len()
+        ),
+        jpeg,
+    );
+    let page = masked_jpeg_page(mask);
+    assert!(
+        near(px(&page, 100, 842 - 100), [200, 30, 40]),
+        "{:?}",
+        px(&page, 100, 742)
+    );
+    assert!(
+        near(px(&page, 200, 842 - 100), WHITE),
+        "{:?}",
+        px(&page, 200, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_image_soft_mask_of_another_size_covers_the_same_square() {
+    // 2 x 2 mask over a 4 x 2 image: opaque top-left and bottom-right, clear elsewhere.
+    let mask = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray\
+          /BitsPerComponent 8/Length 4>>",
+        &[255, 0, 0, 255],
+    );
+    let page = masked_jpeg_page(mask);
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(
+        near(at(100, 130), [200, 30, 40]),
+        "top-left {:?}",
+        at(100, 130)
+    );
+    assert!(near(at(200, 130), WHITE), "top-right {:?}", at(200, 130));
+    assert!(near(at(100, 70), WHITE), "bottom-left {:?}", at(100, 70));
+    assert!(
+        near(at(200, 70), [200, 30, 40]),
+        "bottom-right {:?}",
+        at(200, 70)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
 /// A 16 x 8 fax image, white on the left half and black on the right, as MuPDF renders it:
 /// Group 4, and Group 3 one-dimensional with end-of-line codes (both written by libtiff).
 const G4_HALVES: &[u8] = &[0x33, 0x17, 0xff, 0xf0, 0x01, 0x00, 0x10];

@@ -1526,13 +1526,16 @@ impl Painter<'_> {
             return None;
         }
 
-        // A soft mask of the image's own size gives each pixel's opacity.
-        if let Some(smask) = image.smask.as_deref() {
-            if smask.width == Some(w) && smask.height == Some(h) {
-                if let Some((PngColorType::Gray, alpha)) = decode_samples(smask, w, h) {
-                    for (px, a) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(alpha) {
-                        px[3] = a;
-                    }
+        // The image's soft mask gives each pixel's opacity. It covers the same unit square at
+        // a resolution of its own (ISO 32000-1 §11.6.5.3), so each pixel takes the mask sample
+        // its centre falls on.
+        if let Some((mw, mh, alpha)) = image.smask.as_deref().and_then(mask_alpha) {
+            let pixels = rgba.as_chunks_mut::<4>().0;
+            for y in 0..h as usize {
+                let row = (2 * y + 1) * mh as usize / (2 * h as usize) * mw as usize;
+                for x in 0..w as usize {
+                    let col = (2 * x + 1) * mw as usize / (2 * w as usize);
+                    pixels[y * w as usize + x][3] = alpha[row + col];
                 }
             }
         }
@@ -1545,6 +1548,21 @@ impl Painter<'_> {
         }
         Pixmap::from_vec(rgba, IntSize::from_wh(w, h)?)
     }
+}
+
+/// An image's soft mask as `(width, height, opacity per pixel)`. A JPEG decodes to RGB
+/// whatever its components, so a gray mask coded as one has equal channels: the first stands
+/// for the pixel.
+fn mask_alpha(smask: &RawXObject) -> Option<(u32, u32, Vec<u8>)> {
+    let (w, h) = (smask.width?, smask.height?);
+    if w == 0 || h == 0 || !png_encode::decodable(w, h, 4) {
+        return None;
+    }
+    let alpha = match decode_samples(smask, w, h)? {
+        (PngColorType::Gray, samples) => samples,
+        (PngColorType::Rgb, samples) => samples.as_chunks::<3>().0.iter().map(|p| p[0]).collect(),
+    };
+    (alpha.len() == w as usize * h as usize).then_some((w, h, alpha))
 }
 
 /// Average `pixmap` down by whole factors while it is at least twice the `(width, height)`
