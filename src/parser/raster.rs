@@ -263,7 +263,8 @@ impl PaintSpace {
             }
             PaintSpace::Pattern(base) => return base.as_ref()?.color(values),
             PaintSpace::Spot(space) => {
-                let (alternate, components) = space.alternate_color(v(0))?;
+                let tints: Vec<f32> = (0..space.components()).map(v).collect();
+                let (alternate, components) = space.alternate_color(&tints)?;
                 PaintSpace::of_image_space(alternate).color(&components)?
             }
             PaintSpace::Tint(n) => {
@@ -612,7 +613,7 @@ impl Painter<'_> {
                     PaintSpace::Gray | PaintSpace::Tint(_) | PaintSpace::Indexed(_) => vec![0.0],
                     PaintSpace::Rgb => vec![0.0, 0.0, 0.0],
                     // Full tint.
-                    PaintSpace::Spot(_) => vec![1.0],
+                    PaintSpace::Spot(space) => vec![1.0; space.components()],
                     PaintSpace::Pattern(_) => Vec::new(),
                 };
                 if op.operator == "cs" {
@@ -1645,7 +1646,27 @@ fn downsample(pixmap: Pixmap, target: (f32, f32)) -> Pixmap {
 /// An image's samples as 8-bit gray or RGB pixels, decoding the codecs this reads.
 fn decode_samples(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
     match image.filter.as_deref() {
-        Some("DCTDecode") => return decode_jpeg(&image.data, w, h, image.decode.as_deref()),
+        Some("DCTDecode") => {
+            // A gray JPEG in a one-component space (gray, or a tint) holds that space's
+            // samples, `/Decode` included -- not brightnesses.
+            if let Some(color) = image
+                .color
+                .as_ref()
+                .filter(|c| c.components() == 1 && !matches!(c, ImageColorSpace::Indexed { .. }))
+            {
+                if let Some(samples) = decode_jpeg_luma(&image.data, w, h) {
+                    return png_encode::image_pixels(
+                        w,
+                        h,
+                        8,
+                        color,
+                        image.decode.as_deref(),
+                        &samples,
+                    );
+                }
+            }
+            return decode_jpeg(&image.data, w, h, image.decode.as_deref());
+        }
         Some("JPXDecode") => return decode_jpx(image, w, h),
         _ => {}
     }
@@ -1764,6 +1785,31 @@ fn decode_jpeg(
         rgb.extend([r, g, b].map(|v| (v * 255.0).round() as u8));
     }
     Some((PngColorType::Rgb, rgb))
+}
+
+/// The samples of a one-component JPEG, `None` for any other.
+fn decode_jpeg_luma(data: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    use zune_jpeg::zune_core::bytestream::ZCursor;
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    use zune_jpeg::zune_core::options::DecoderOptions;
+
+    if !png_encode::decodable(w, h, 1) {
+        return None;
+    }
+    let options = DecoderOptions::default()
+        .jpeg_set_out_colorspace(ColorSpace::Luma)
+        .set_max_width(w as usize)
+        .set_max_height(h as usize);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    decoder.decode_headers().ok()?;
+    if decoder.input_colorspace()? != ColorSpace::Luma {
+        return None;
+    }
+    let samples = decoder.decode().ok()?;
+    let info = decoder.info()?;
+    ((u32::from(info.width), u32::from(info.height)) == (w, h)
+        && samples.len() == w as usize * h as usize)
+        .then_some(samples)
 }
 
 /// An ink's amount in `0..=1` from its 8-bit sample (as decoded, possibly out of range for a

@@ -84,11 +84,30 @@ pub(crate) fn image_pixels(
         }
     };
 
+    // A tint of one colorant has as many colors as sample values: convert each once.
+    let lut: Option<Vec<Vec<u8>>> = match color {
+        ImageColorSpace::Tint(_) if components == 1 && bpc <= 8 => {
+            let (lo, hi) = range(0);
+            (0..=max as u32)
+                .map(|s| {
+                    let mut entry = Vec::with_capacity(output.channels() as usize);
+                    color
+                        .push_pixel(&[lo + s as f32 * (hi - lo) / max], &mut entry)
+                        .map(|()| entry)
+                })
+                .collect::<Option<Vec<_>>>()
+        }
+        _ => None,
+    };
     let mut pixels =
         Vec::with_capacity(width as usize * height as usize * output.channels() as usize);
     let mut values = vec![0f32; components];
     for row in data.chunks(row_bytes).take(height as usize) {
         for x in 0..width as usize {
+            if let Some(lut) = &lut {
+                pixels.extend_from_slice(&lut[sample_at(row, x * bpc, bpc) as usize]);
+                continue;
+            }
             for (i, value) in values.iter_mut().enumerate() {
                 let sample = sample_at(row, (x * components + i) * bpc, bpc) as f32;
                 let (lo, hi) = range(i);
@@ -150,7 +169,7 @@ impl ImageColorSpace {
                 base.push_pixel(&base_values, out)?;
             }
             ImageColorSpace::Tint(space) => {
-                let (alternate, components) = space.alternate_color(values[0])?;
+                let (alternate, components) = space.alternate_color(values)?;
                 alternate.push_pixel(&components, out)?;
             }
         }

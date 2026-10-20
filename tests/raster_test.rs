@@ -722,6 +722,99 @@ fn an_image_in_a_separation_space_is_converted_through_its_transform() {
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
 
+#[test]
+fn a_gray_jpeg_in_a_tint_space_is_read_through_its_transform() {
+    // 4 x 2: the left half is sample 255 (full tint of a black ink: black), the right sample 0
+    // (no ink: white) -- the opposite of reading the samples as brightness.
+    let jpeg = include_bytes!("fixtures/halves_white_black_4x2_gray.jpg");
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 4/Height 2              /ColorSpace[/Separation/Black/DeviceGray<</FunctionType 2/Domain[0 1]/C0[1]/C1[0]/N 1>>]              /BitsPerComponent 8/Filter/DCTDecode/Length {}>>",
+            jpeg.len()
+        ),
+        jpeg,
+    );
+    let page = render(
+        &page_pdf_with_xobjects(A4, b"q 200 0 0 100 50 50 cm /J Do Q", vec![("J", image)]),
+        &PT,
+    );
+    assert!(
+        near(px(&page, 100, 842 - 100), [0, 0, 0]),
+        "{:?}",
+        px(&page, 100, 742)
+    );
+    assert!(
+        near(px(&page, 200, 842 - 100), WHITE),
+        "{:?}",
+        px(&page, 200, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+/// A page whose `/S0` color space is `space` with the calculator function `program` (object 5)
+/// as its tint transform, painting `content`.
+fn calculator_page(
+    space: &str,
+    domain: &str,
+    range: &str,
+    program: &str,
+    content: &[u8],
+) -> RasteredPage {
+    render(
+        &assemble(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            format!(
+                "<</Type/Page/Parent 2 0 R{A4}/Resources<</ColorSpace<</S0 {space}>>>>                 /Contents 4 0 R>>"
+            )
+            .into_bytes(),
+            stream_object(&format!("<</Length {}>>", content.len()), content),
+            stream_object(
+                &format!(
+                    "<</FunctionType 4/Domain {domain}/Range {range}/Length {}>>",
+                    program.len()
+                ),
+                program.as_bytes(),
+            ),
+        ]),
+        &PT,
+    )
+}
+
+#[test]
+fn a_devicen_of_several_colorants_runs_its_calculator_transform() {
+    // Two tints in, an RGB color out: red is the first tint, green the second, blue none.
+    let page = calculator_page(
+        "[/DeviceN[/A/B]/DeviceRGB 5 0 R]",
+        "[0 1 0 1]",
+        "[0 1 0 1 0 1]",
+        "{ 0 }",
+        b"/S0 cs 1 0.5 scn 100 100 100 100 re f",
+    );
+    assert!(
+        near(px(&page, 150, 842 - 150), [255, 128, 0]),
+        "{:?}",
+        px(&page, 150, 692)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_one_colorant_devicen_with_a_calculator_transform_reads_as_its_ink() {
+    // The tint becomes the K of CMYK: no tint is white, full tint the press black.
+    let program = "{ 0 exch 0 exch 0 exch }";
+    let page = calculator_page(
+        "[/DeviceN[/Black]/DeviceCMYK 5 0 R]",
+        "[0 1]",
+        "[0 1 0 1 0 1 0 1]",
+        program,
+        b"/S0 cs 0 scn 100 100 100 100 re f 1 scn 300 100 100 100 re f",
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), WHITE), "{:?}", at(150, 150));
+    assert!(near(at(350, 150), [35, 31, 32]), "{:?}", at(350, 150));
+}
+
 /// A 16 x 8 fax image, white on the left half and black on the right, as MuPDF renders it:
 /// Group 4, and Group 3 one-dimensional with end-of-line codes (both written by libtiff).
 const G4_HALVES: &[u8] = &[0x33, 0x17, 0xff, 0xf0, 0x01, 0x00, 0x10];

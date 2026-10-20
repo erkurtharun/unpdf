@@ -1,9 +1,10 @@
 //! PDF functions of one input (ISO 32000-1 §7.10) — what a shading's colors are made of.
 //!
-//! Sampled (type 0), exponential (type 2) and stitching (type 3) functions are read; a
-//! PostScript calculator function (type 4) is not, and neither is a function of more than one
-//! input, which no axial or radial shading uses.
+//! Sampled (type 0), exponential (type 2), stitching (type 3) and PostScript calculator
+//! (type 4) functions are read. Only a calculator function takes more than one input; a
+//! sampled function of several inputs is not read.
 
+use super::postscript::Program;
 use super::raw::stream as raw_stream;
 use super::raw::tokenizer::{dict_get, PdfDict, PdfObject};
 use super::raw::RawDocument;
@@ -38,6 +39,13 @@ pub(crate) enum Function {
         bounds: Vec<f32>,
         encode: Vec<(f32, f32)>,
     },
+    /// Type 4: a PostScript calculator program over `domain.len()` inputs, giving
+    /// `range.len()` outputs.
+    Calculator {
+        domain: Vec<(f32, f32)>,
+        range: Vec<(f32, f32)>,
+        program: Program,
+    },
     /// An array of functions, one output each — the form a shading may give instead of one
     /// function of several outputs.
     Each(Vec<Function>),
@@ -49,9 +57,49 @@ impl Function {
         read(doc, obj, 0)
     }
 
+    /// How many inputs the function takes.
+    pub(crate) fn inputs(&self) -> usize {
+        match self {
+            Function::Calculator { domain, .. } => domain.len(),
+            _ => 1,
+        }
+    }
+
+    /// The function's outputs at `inputs` (the first, for a function of one input); none when a
+    /// calculator program has no result there.
+    pub(crate) fn eval_inputs(&self, inputs: &[f32]) -> Vec<f32> {
+        match self {
+            Function::Calculator {
+                domain,
+                range,
+                program,
+            } => {
+                if inputs.len() < domain.len() {
+                    return Vec::new();
+                }
+                let clipped: Vec<f32> = inputs
+                    .iter()
+                    .zip(domain)
+                    .map(|(&v, &d)| clip(v, d))
+                    .collect();
+                match program.run(&clipped) {
+                    // The program leaves its outputs on the stack; the top `range.len()` count.
+                    Some(stack) if stack.len() >= range.len() => stack[stack.len() - range.len()..]
+                        .iter()
+                        .zip(range)
+                        .map(|(&v, &r)| clip(v, r))
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            }
+            _ => self.eval(inputs.first().copied().unwrap_or(0.0)),
+        }
+    }
+
     /// The function's outputs at `t`.
     pub(crate) fn eval(&self, t: f32) -> Vec<f32> {
         match self {
+            Function::Calculator { .. } => self.eval_inputs(&[t]),
             Function::Sampled {
                 domain,
                 encode,
@@ -118,6 +166,20 @@ fn read(doc: &RawDocument, obj: &PdfObject, depth: usize) -> Option<Function> {
     };
     let numbers = |key: &[u8]| numbers(doc, dict, key);
     let pairs = |key: &[u8]| numbers(key).map(|n| pairs(&n));
+    if dict_get(dict, b"FunctionType")
+        .map(|v| doc.resolve(v))
+        .and_then(|v| v.as_i64())
+        == Some(4)
+    {
+        let domain = pairs(b"Domain").filter(|d| !d.is_empty())?;
+        let range = pairs(b"Range").filter(|r| !r.is_empty())?;
+        let program = Program::parse(&raw_stream::decompress(stream?).ok()?)?;
+        return Some(Function::Calculator {
+            domain,
+            range,
+            program,
+        });
+    }
     let domain = *pairs(b"Domain")?.first()?;
     match dict_get(dict, b"FunctionType")
         .map(|v| doc.resolve(v))
@@ -267,6 +329,22 @@ mod tests {
         assert!(close(&f.eval(0.25), &[0.5]));
         assert!(close(&f.eval(0.5), &[1.0]));
         assert!(close(&f.eval(1.0), &[0.0]));
+    }
+
+    #[test]
+    fn a_calculator_function_clips_its_inputs_and_outputs() {
+        let f = Function::Calculator {
+            domain: vec![(0.0, 1.0), (0.0, 1.0)],
+            range: vec![(0.0, 1.0), (0.0, 1.0)],
+            program: Program::parse(b"{ 2 mul exch }").unwrap(),
+        };
+        assert_eq!(f.inputs(), 2);
+        // The second input is doubled, then the two are swapped.
+        assert!(close(&f.eval_inputs(&[0.25, 0.5]), &[1.0, 0.25]));
+        // An input outside its domain is clipped to it, an output outside the range too.
+        assert!(close(&f.eval_inputs(&[9.0, 0.5]), &[1.0, 1.0]));
+        // Too few inputs: no outputs.
+        assert!(f.eval_inputs(&[0.5]).is_empty());
     }
 
     #[test]

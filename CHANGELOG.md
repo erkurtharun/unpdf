@@ -11,6 +11,16 @@
 
 ### Fixed
 
+- **`DeviceN` colors, PostScript tint transforms and gray JPEGs in a tint space.** A `DeviceN`
+  space of several colorants, and a `Separation`/`DeviceN` whose tint transform is a PostScript
+  calculator function (function type 4, ISO 32000-1 §7.10.5) -- the form layout programs write
+  most -- were approximated as a tint from white to black. The calculator program is now run,
+  so such colors, shadings and images come out in their alternate space. A `DCTDecode` gray
+  image in a one-component space (a `Separation` such as `/Black`, or `DeviceGray` with
+  `/Decode`) was shown with its samples as brightness, so a figure came out as its negative;
+  its samples now go through the space. A sampled transform of several inputs is still
+  approximated.
+
 - **`DeviceCMYK` colors come out as they do on the press.** CMYK was converted by the naive
   complement (`R = (1 - C)(1 - K)`), which paints full cyan as (0, 255, 255), full magenta as
   (255, 0, 255) and a full black ink as pure black -- far more saturated than any reader of the
@@ -39,8 +49,7 @@
   the rendered page. The tint is now mapped through the space's tint transform (sampled,
   exponential and stitching functions) into its alternate space (ISO 32000-1 §8.6.6.4), for
   fills, strokes, axial/radial shadings and images in such a space, and a `Separation` starts
-  at full tint. `DeviceN` of one colorant reads the same way. `DeviceN` of several colorants
-  and PostScript-calculator tint transforms are still approximated.
+  at full tint. A `DeviceN` space reads the same way.
 
 - **A page's pictures keep their transparency when the image's own soft mask is a JPEG or has
   a size of its own.** An image's `/SMask` was applied only when it was a raw gray image of the
