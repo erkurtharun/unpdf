@@ -11,6 +11,15 @@
 
 ### Fixed
 
+- **`Separation` colors come out in the color they stand for.** A color set in a `Separation`
+  space (a spot ink such as a brand color) was read as a tint from white to black, so a spot
+  green rendered black -- headings, rules, table headers and header bands lost their color in
+  the rendered page. The tint is now mapped through the space's tint transform (sampled,
+  exponential and stitching functions) into its alternate space (ISO 32000-1 §8.6.6.4), for
+  fills, strokes, axial/radial shadings and images in such a space, and a `Separation` starts
+  at full tint. `DeviceN` of one colorant reads the same way. `DeviceN` of several colorants
+  and PostScript-calculator tint transforms are still approximated.
+
 - **A page's pictures keep their transparency when the image's own soft mask is a JPEG or has
   a size of its own.** An image's `/SMask` was applied only when it was a raw gray image of the
   picture's exact size; a mask coded as `DCTDecode` (what many PDF producers write for a cut-out

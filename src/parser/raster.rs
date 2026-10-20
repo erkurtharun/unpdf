@@ -17,7 +17,8 @@ use std::rc::Rc;
 
 use super::backend::{
     CodecParms, ContentOp, GlyphAdvance, ImageColorSpace, ObjectId, PageId, PdfBackend, PdfValue,
-    RawXObject, Shading, ShadingGeometry, SoftMask, SoftMaskEntry, TilingPattern, Type3Font,
+    RawXObject, Shading, ShadingGeometry, SoftMask, SoftMaskEntry, TilingPattern, TintSpace,
+    Type3Font,
 };
 use super::form_xobject;
 use super::png_encode::{self, PngColorType};
@@ -227,8 +228,10 @@ enum PaintSpace {
     Indexed(ImageColorSpace),
     /// A pattern, with the space an uncolored pattern's color is given in.
     Pattern(Option<Box<PaintSpace>>),
-    /// A space this does not convert (`Separation`, `DeviceN`, `Lab`): its components are
-    /// read as a tint, 0 white to 1 black.
+    /// A `Separation` space: a tint its transform maps into an alternate space.
+    Spot(TintSpace),
+    /// A space this does not convert (`DeviceN` of several colorants, `Lab`): its components
+    /// are read as a tint, 0 white to 1 black.
     Tint(usize),
 }
 
@@ -258,6 +261,10 @@ impl PaintSpace {
                 PaintSpace::of_image_space(base).color(&comps)?
             }
             PaintSpace::Pattern(base) => return base.as_ref()?.color(values),
+            PaintSpace::Spot(space) => {
+                let (alternate, components) = space.alternate_color(v(0))?;
+                PaintSpace::of_image_space(alternate).color(&components)?
+            }
             PaintSpace::Tint(n) => {
                 let tint = (0..*n).map(v).fold(0.0f32, f32::max);
                 Rgb(1.0 - tint, 1.0 - tint, 1.0 - tint)
@@ -271,6 +278,7 @@ impl PaintSpace {
             ImageColorSpace::Rgb => PaintSpace::Rgb,
             ImageColorSpace::Cmyk => PaintSpace::Cmyk,
             indexed @ ImageColorSpace::Indexed { .. } => PaintSpace::Indexed(indexed.clone()),
+            ImageColorSpace::Tint(space) => PaintSpace::Spot(space.clone()),
         }
     }
 }
@@ -593,6 +601,8 @@ impl Painter<'_> {
                     PaintSpace::Cmyk => vec![0.0, 0.0, 0.0, 1.0],
                     PaintSpace::Gray | PaintSpace::Tint(_) | PaintSpace::Indexed(_) => vec![0.0],
                     PaintSpace::Rgb => vec![0.0, 0.0, 0.0],
+                    // Full tint.
+                    PaintSpace::Spot(_) => vec![1.0],
                     PaintSpace::Pattern(_) => Vec::new(),
                 };
                 if op.operator == "cs" {

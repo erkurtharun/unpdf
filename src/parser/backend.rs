@@ -224,16 +224,51 @@ pub enum ImageColorSpace {
         hival: u8,
         lookup: Vec<u8>,
     },
+    /// One component, a tint: a `Separation` (or `DeviceN` of one colorant) space, whose tint
+    /// transform maps it into an alternate space.
+    Tint(TintSpace),
 }
 
 impl ImageColorSpace {
     /// Components per sample.
     pub fn components(&self) -> usize {
         match self {
-            ImageColorSpace::Gray | ImageColorSpace::Indexed { .. } => 1,
+            ImageColorSpace::Gray | ImageColorSpace::Indexed { .. } | ImageColorSpace::Tint(_) => 1,
             ImageColorSpace::Rgb => 3,
             ImageColorSpace::Cmyk => 4,
         }
+    }
+}
+
+/// A `Separation` color space (ISO 32000-1 §8.6.6.4): a tint in `0..=1` that a function maps
+/// into the space the colorant is approximated in. Tint 0 is no ink, tint 1 full ink.
+#[derive(Debug, Clone)]
+pub struct TintSpace {
+    /// The space the tint transform's outputs are in: never another tint space or `Indexed`.
+    alternate: Box<ImageColorSpace>,
+    transform: Arc<super::function::Function>,
+}
+
+impl PartialEq for TintSpace {
+    fn eq(&self, other: &Self) -> bool {
+        self.alternate == other.alternate && Arc::ptr_eq(&self.transform, &other.transform)
+    }
+}
+
+impl TintSpace {
+    /// The space the tint transform's outputs are in.
+    pub(crate) fn alternate(&self) -> &ImageColorSpace {
+        &self.alternate
+    }
+
+    /// The color `tint` stands for, as components of the alternate space (`None` when the
+    /// transform gives fewer than the alternate space takes).
+    pub(crate) fn alternate_color(&self, tint: f32) -> Option<(&ImageColorSpace, Vec<f32>)> {
+        let mut values = self.transform.eval(tint);
+        (values.len() >= self.alternate.components()).then(|| {
+            values.truncate(self.alternate.components());
+            (&*self.alternate, values)
+        })
     }
 }
 
@@ -2074,6 +2109,16 @@ fn resolve_image_color_space(
                                 .and_then(|alt| resolve_image_color_space(doc, alt, depth + 1))
                         })
                 }
+                b"Separation" => {
+                    tint_space(doc, arr.get(2)?, arr.get(3)?, depth).map(ImageColorSpace::Tint)
+                }
+                // A `DeviceN` of one colorant is a `Separation`; more colorants need a
+                // function of several inputs.
+                b"DeviceN"
+                    if doc.resolve(arr.get(1)?).as_array().map(|names| names.len()) == Some(1) =>
+                {
+                    tint_space(doc, arr.get(2)?, arr.get(3)?, depth).map(ImageColorSpace::Tint)
+                }
                 b"Indexed" | b"I" => {
                     let base = resolve_image_color_space(doc, arr.get(1)?, depth + 1)?;
                     if matches!(base, ImageColorSpace::Indexed { .. }) {
@@ -2096,6 +2141,27 @@ fn resolve_image_color_space(
         }
         _ => None,
     }
+}
+
+/// The space of a `Separation`/`DeviceN` array's alternate space and tint transform.
+fn tint_space(
+    doc: &RawDocument,
+    alternate: &RawPdfObject,
+    transform: &RawPdfObject,
+    depth: usize,
+) -> Option<TintSpace> {
+    let alternate = resolve_image_color_space(doc, alternate, depth + 1)?;
+    if matches!(
+        alternate,
+        ImageColorSpace::Indexed { .. } | ImageColorSpace::Tint(_)
+    ) {
+        return None; // ISO 32000-1 §8.6.6.4: the alternate is neither
+    }
+    let transform = Arc::new(super::function::Function::read(doc, transform)?);
+    Some(TintSpace {
+        alternate: Box::new(alternate),
+        transform,
+    })
 }
 
 /// An array of numbers (`/Decode [1 0 1 0]`).

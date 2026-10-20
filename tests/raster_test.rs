@@ -565,6 +565,110 @@ fn an_image_soft_mask_of_another_size_covers_the_same_square() {
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
 
+/// A spot color that is green at full tint and white at none, approximated in CMYK:
+/// full tint is (1, 0, .71, .43), which is RGB (0, 145, 42).
+const SPOT_GREEN: &str = "[/Separation/Spot/DeviceCMYK    <</FunctionType 2/Domain[0 1]/C0[0 0 0 0]/C1[1 0 .71 .43]/N 1>>]";
+const GREEN: [u8; 3] = [0, 145, 42];
+
+fn spot_resources(space: &str) -> String {
+    format!("/Resources<</ColorSpace<</S0 {space}>>>>")
+}
+
+#[test]
+fn a_separation_color_comes_out_in_its_alternate_space() {
+    let page = render(
+        &page_pdf(
+            &spot_resources(SPOT_GREEN),
+            A4,
+            b"/S0 cs 1 scn 100 100 100 100 re f 0.5 scn 300 100 100 100 re f 0 scn 500 100 50 50 re f",
+        ),
+        &PT,
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), GREEN), "full {:?}", at(150, 150));
+    // Half tint: CMYK (.5, 0, .355, .215).
+    assert!(
+        near(at(350, 150), [100, 200, 129]),
+        "half {:?}",
+        at(350, 150)
+    );
+    assert!(near(at(520, 120), WHITE), "none {:?}", at(520, 120));
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_separation_space_starts_at_full_tint() {
+    let page = render(
+        &page_pdf(
+            &spot_resources(SPOT_GREEN),
+            A4,
+            b"/S0 cs 100 100 100 100 re f /S0 CS 20 w 300 100 m 400 100 l S",
+        ),
+        &PT,
+    );
+    assert!(near(px(&page, 150, 842 - 150), GREEN));
+    // The stroke has its own space, and it too starts at full tint.
+    assert!(near(px(&page, 350, 842 - 100), GREEN));
+}
+
+#[test]
+fn a_separation_over_gray_follows_a_stitched_transform() {
+    // Gray falls from 1 to .5 over tints [0, .5] and from .5 to 0 over [.5, 1]: tint .25 is .75.
+    let space = "[/Separation/Black/DeviceGray<</FunctionType 3/Domain[0 1]/Bounds[0.5]        /Encode[0 1 0 1]/Functions[        <</FunctionType 2/Domain[0 1]/C0[1]/C1[0.5]/N 1>>        <</FunctionType 2/Domain[0 1]/C0[0.5]/C1[0]/N 1>>]>>]";
+    let page = render(
+        &page_pdf(
+            &spot_resources(space),
+            A4,
+            b"/S0 cs 0.25 scn 100 100 100 100 re f 1 scn 300 100 100 100 re f",
+        ),
+        &PT,
+    );
+    let at = |x: u32, y: u32| px(&page, x, 842 - y);
+    assert!(near(at(150, 150), [191, 191, 191]), "{:?}", at(150, 150));
+    assert!(near(at(350, 150), [0, 0, 0]), "{:?}", at(350, 150));
+}
+
+#[test]
+fn a_shading_in_a_separation_space_runs_through_its_transform() {
+    let shading = format!(
+        "<</ShadingType 2/ColorSpace{SPOT_GREEN}/Coords[0 0 595 0]          /Function<</FunctionType 2/Domain[0 1]/C0[0]/C1[1]/N 1>>/Extend[true true]>>"
+    );
+    let page = render(&page_pdf(&with_shading(&shading), A4, b"/Sh sh"), &PT);
+    assert!(near(px(&page, 2, 400), WHITE), "{:?}", px(&page, 2, 400));
+    assert!(
+        near(px(&page, 592, 400), GREEN),
+        "{:?}",
+        px(&page, 592, 400)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn an_image_in_a_separation_space_is_converted_through_its_transform() {
+    // Two samples: tint 0 (white) and tint 1 (the spot green).
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace{SPOT_GREEN}              /BitsPerComponent 8/Length 2>>"
+        ),
+        &[0, 255],
+    );
+    let page = render(
+        &page_pdf_with_xobjects(A4, b"q 200 0 0 100 50 50 cm /J Do Q", vec![("J", image)]),
+        &PT,
+    );
+    assert!(
+        near(px(&page, 70, 842 - 100), WHITE),
+        "{:?}",
+        px(&page, 70, 742)
+    );
+    assert!(
+        near(px(&page, 230, 842 - 100), GREEN),
+        "{:?}",
+        px(&page, 230, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
 /// A 16 x 8 fax image, white on the left half and black on the right, as MuPDF renders it:
 /// Group 4, and Group 3 one-dimensional with end-of-line codes (both written by libtiff).
 const G4_HALVES: &[u8] = &[0x33, 0x17, 0xff, 0xf0, 0x01, 0x00, 0x10];

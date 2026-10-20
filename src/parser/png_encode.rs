@@ -122,6 +122,7 @@ impl ImageColorSpace {
         match self {
             ImageColorSpace::Gray => PngColorType::Gray,
             ImageColorSpace::Indexed { base, .. } => base.output(),
+            ImageColorSpace::Tint(space) => space.alternate().output(),
             ImageColorSpace::Rgb | ImageColorSpace::Cmyk => PngColorType::Rgb,
         }
     }
@@ -146,6 +147,10 @@ impl ImageColorSpace {
                 let entry = lookup.get(index * n..index * n + n)?;
                 let base_values: Vec<f32> = entry.iter().map(|&b| f32::from(b) / 255.0).collect();
                 base.push_pixel(&base_values, out)?;
+            }
+            ImageColorSpace::Tint(space) => {
+                let (alternate, components) = space.alternate_color(values[0])?;
+                alternate.push_pixel(&components, out)?;
             }
         }
         Some(())
