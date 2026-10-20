@@ -11,6 +11,15 @@
 
 ### Fixed
 
+- **`DeviceCMYK` colors come out as they do on the press.** CMYK was converted by the naive
+  complement (`R = (1 - C)(1 - K)`), which paints full cyan as (0, 255, 255), full magenta as
+  (255, 0, 255) and a full black ink as pure black -- far more saturated than any reader of the
+  same file shows. The conversion is now PDFium's: a 9 x 9 x 9 x 9 table of press colors (cyan
+  (0, 174, 239), black ink (35, 31, 32)) interpolated between the nearest samples, for fills,
+  strokes, shadings and CMYK images (in the rendered page and in extracted image resources).
+  Against MuPDF's rendering of the 200 documents of a public benchmark the mean difference falls
+  from 3.2 to 2.8 of 255.
+
 - **A soft mask applies to a whole transparency group.** A Form XObject with a `/Group`
   painted while a soft mask is set was masked object by object, so a group whose own content
   sets `/SMask /None` (how a drop shadow is commonly built) lost the mask and came out as a

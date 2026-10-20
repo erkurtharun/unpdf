@@ -115,7 +115,8 @@ fn colors_in_each_device_space() {
     );
     assert!(near(px(&page, 50, 842 - 50), [128, 128, 128]));
     assert!(near(px(&page, 150, 842 - 50), [0, 255, 0]));
-    assert!(near(px(&page, 250, 842 - 50), [0, 0, 0]));
+    // A full black ink on the press, not pure black.
+    assert!(near(px(&page, 250, 842 - 50), [35, 31, 32]));
 }
 
 #[test]
@@ -518,7 +519,7 @@ fn a_cmyk_jpeg_is_read_through_its_decode_array() {
         px(&page, 80, 742)
     );
     assert!(
-        near(px(&page, 220, 842 - 100), [0, 255, 255]),
+        near(px(&page, 220, 842 - 100), [0, 174, 239]),
         "{:?}",
         px(&page, 220, 742)
     );
@@ -528,17 +529,17 @@ fn a_cmyk_jpeg_is_read_through_its_decode_array() {
 #[test]
 fn a_ycck_jpeg_without_a_decode_array_keeps_its_light_and_dark() {
     // Adobe transform 2 (YCCK): left (Y 200, Cb 128, Cr 128, K 0), right (100, 128, 128, 128).
-    // libjpeg's conversion gives C = M = Y' = 255 - Y, read as ink amounts: gray 200, and
-    // 100 under half a K ink (about 50).
+    // libjpeg's conversion gives C = M = Y' = 255 - Y, read as ink amounts and converted like
+    // any CMYK: a light warm gray, and a dark one under half a K ink.
     let jpeg = include_bytes!("fixtures/halves_ycck_16x8.jpg");
     let page = cmyk_jpeg_page(jpeg, "");
     assert!(
-        near(px(&page, 80, 842 - 100), [200, 200, 200]),
+        near(px(&page, 80, 842 - 100), [199, 190, 187]),
         "{:?}",
         px(&page, 80, 742)
     );
     assert!(
-        near(px(&page, 220, 842 - 100), [50, 50, 50]),
+        near(px(&page, 220, 842 - 100), [70, 62, 60]),
         "{:?}",
         px(&page, 220, 742)
     );
@@ -618,9 +619,9 @@ fn an_image_soft_mask_of_another_size_covers_the_same_square() {
 }
 
 /// A spot color that is green at full tint and white at none, approximated in CMYK:
-/// full tint is (1, 0, .71, .43), which is RGB (0, 145, 42).
+/// full tint is (1, 0, .71, .43), which is RGB (0, 110, 81) on the press.
 const SPOT_GREEN: &str = "[/Separation/Spot/DeviceCMYK    <</FunctionType 2/Domain[0 1]/C0[0 0 0 0]/C1[1 0 .71 .43]/N 1>>]";
-const GREEN: [u8; 3] = [0, 145, 42];
+const GREEN: [u8; 3] = [0, 110, 81];
 
 fn spot_resources(space: &str) -> String {
     format!("/Resources<</ColorSpace<</S0 {space}>>>>")
@@ -640,7 +641,7 @@ fn a_separation_color_comes_out_in_its_alternate_space() {
     assert!(near(at(150, 150), GREEN), "full {:?}", at(150, 150));
     // Half tint: CMYK (.5, 0, .355, .215).
     assert!(
-        near(at(350, 150), [100, 200, 129]),
+        near(at(350, 150), [100, 167, 150]),
         "half {:?}",
         at(350, 150)
     );

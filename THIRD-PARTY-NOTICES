@@ -2,7 +2,9 @@ Third-party notices
 ===================
 
 The standard-fonts feature (on in the C ABI, .NET and Python packages) embeds the 14
-stand-in font faces PDFium ships (assets/standard-fonts/), unmodified, under this license:
+stand-in font faces PDFium ships (assets/standard-fonts/), unmodified, and every build
+converts DeviceCMYK colors with the color table PDFium uses (src/parser/cmyk_srgb_data.rs,
+written by scripts/gen_cmyk_srgb.py from core/fxge/dib/cfx_cmyk_to_srgb.cpp), under this license:
 
 Copyright 2014 PDFium Authors. All rights reserved.
 

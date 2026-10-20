@@ -4,13 +4,14 @@
 //! PNG's own filter-byte-per-row + zlib + chunk/CRC framing.
 //!
 //! [`image_to_png`] first turns the image's samples into 8-bit gray or RGB pixels: it unpacks
-//! 1, 2, 4, 8 and 16-bit samples, applies `/Decode`, converts `DeviceCMYK` to RGB (the naive
-//! complement, no ICC profile) and looks `Indexed` samples up in their palette. Anything else
+//! 1, 2, 4, 8 and 16-bit samples, applies `/Decode`, converts `DeviceCMYK` to RGB (as PDFium
+//! does, [`super::cmyk`]) and looks `Indexed` samples up in their palette. Anything else
 //! (`Lab`, `Separation`, `DeviceN`, ...) is `None` — the caller falls back to the
 //! raw/undecoded-drop path, which the resource-inventory layer reports as an "unsupported
 //! image" quality signal rather than silent absence.
 
 use super::backend::ImageColorSpace;
+use super::cmyk::cmyk_to_rgb_unit;
 
 /// The widest or tallest image this decodes, in pixels: PDFium's `kMaxImageDimension`.
 pub(crate) const MAX_IMAGE_DIMENSION: u32 = 0x01_FFFF;
@@ -134,8 +135,8 @@ impl ImageColorSpace {
             ImageColorSpace::Gray => out.push(to_byte(values[0])),
             ImageColorSpace::Rgb => out.extend(values[..3].iter().map(|&v| to_byte(v))),
             ImageColorSpace::Cmyk => {
-                let k = 1.0 - values[3].clamp(0.0, 1.0);
-                out.extend(values[..3].iter().map(|&c| to_byte((1.0 - c) * k)));
+                let rgb = cmyk_to_rgb_unit(values[0], values[1], values[2], values[3]);
+                out.extend(rgb.map(to_byte));
             }
             ImageColorSpace::Indexed {
                 base,
@@ -363,17 +364,18 @@ mod tests {
         assert_eq!(color_type, png::ColorType::Rgb);
         assert_eq!(
             pixels,
-            [0, 255, 255, 255, 0, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255]
+            // The press colors (PDFium's table), not the naive complements.
+            [0, 174, 239, 237, 2, 140, 255, 241, 1, 35, 31, 32, 255, 255, 255]
         );
     }
 
     /// Adobe-produced CMYK images are often stored inverted, with `/Decode [1 0 1 0 1 0 1 0]`.
     #[test]
     fn decode_inverts_the_samples_it_names() {
-        let data = [0, 255, 255, 255]; // read through the inversion: pure cyan
+        let data = [0, 255, 255, 255]; // read through the inversion: full cyan
         let decode = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0];
         let (_, pixels) = converted(1, 1, 8, &ImageColorSpace::Cmyk, Some(&decode), &data);
-        assert_eq!(pixels, [0, 255, 255]);
+        assert_eq!(pixels, [0, 174, 239]);
     }
 
     /// Rows start on a byte boundary: a 3-pixel 1-bit row is one byte with 5 padding bits.
@@ -419,7 +421,7 @@ mod tests {
             lookup: vec![0, 0, 0, 255],
         };
         let (_, pixels) = converted(1, 1, 8, &color, None, &[0]);
-        assert_eq!(pixels, [0, 0, 0]);
+        assert_eq!(pixels, [35, 31, 32]);
     }
 
     #[test]

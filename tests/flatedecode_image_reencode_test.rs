@@ -199,7 +199,8 @@ fn flatedecode_cmyk_image_is_converted_to_rgb() {
 
     let (color_type, pixels) = only_png(&one_page_with_image(image_obj, None));
     assert_eq!(color_type, png::ColorType::Rgb);
-    assert_eq!(pixels, [0, 255, 255, 255, 0, 255, 255, 255, 0, 0, 0, 0]);
+    // The press colors (PDFium's CMYK table), not the naive complements.
+    assert_eq!(pixels, [0, 174, 239, 237, 2, 140, 255, 241, 1, 35, 31, 32]);
 }
 
 #[test]

@@ -11,6 +11,9 @@ mod clip;
 #[rustfmt::skip]
 mod cff_strings;
 pub(crate) mod cmap;
+mod cmyk;
+#[rustfmt::skip]
+mod cmyk_srgb_data;
 pub mod cmap_table;
 mod column_text;
 mod core14;

@@ -20,6 +20,7 @@ use super::backend::{
     RawXObject, Shading, ShadingGeometry, SoftMask, SoftMaskEntry, TilingPattern, TintSpace,
     Type3Font,
 };
+use super::cmyk::cmyk_to_rgb_unit;
 use super::form_xobject;
 use super::png_encode::{self, PngColorType};
 use super::raster_text::LoadedFont;
@@ -242,8 +243,8 @@ impl PaintSpace {
             PaintSpace::Gray => Rgb(v(0), v(0), v(0)),
             PaintSpace::Rgb => Rgb(v(0), v(1), v(2)),
             PaintSpace::Cmyk => {
-                let k = 1.0 - v(3);
-                Rgb((1.0 - v(0)) * k, (1.0 - v(1)) * k, (1.0 - v(2)) * k)
+                let [r, g, b] = cmyk_to_rgb_unit(v(0), v(1), v(2), v(3));
+                Rgb(r, g, b)
             }
             PaintSpace::Indexed(space) => {
                 let ImageColorSpace::Indexed {
@@ -1693,7 +1694,7 @@ fn plain_samples(image: &RawXObject, w: u32, h: u32) -> Option<std::borrow::Cow<
 ///
 /// A four-component JPEG (`DeviceCMYK`) is read as the ink amounts it holds, `/Decode` applied
 /// (`[1 0 1 0 1 0 1 0]` is how a PDF says Photoshop's inverted CMYK is to be read), and
-/// converted by the same naive formula as every other CMYK source. YCCK is first turned into
+/// converted like every other CMYK source. YCCK is first turned into
 /// CMYK the way libjpeg does (`C = 255 - R` of the YCbCr triple), so an Adobe-marked file
 /// with no `/Decode` -- what many layout programs write -- keeps its light and dark.
 fn decode_jpeg(
@@ -1758,11 +1759,9 @@ fn decode_jpeg(
         } else {
             px.map(f32::from)
         };
-        let k = 1.0 - ink_amount(ink[3], pairs[3]);
-        for (i, &v) in ink[..3].iter().enumerate() {
-            let c = 1.0 - ink_amount(v, pairs[i]);
-            rgb.push((c * k * 255.0).round().clamp(0.0, 255.0) as u8);
-        }
+        let amounts = [0, 1, 2, 3].map(|i| ink_amount(ink[i], pairs[i]));
+        let [r, g, b] = cmyk_to_rgb_unit(amounts[0], amounts[1], amounts[2], amounts[3]);
+        rgb.extend([r, g, b].map(|v| (v * 255.0).round() as u8));
     }
     Some((PngColorType::Rgb, rgb))
 }
