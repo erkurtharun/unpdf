@@ -1624,6 +1624,57 @@ fn smask_page_in(smask: &str, group: &str, mask_content: &[u8], content: &[u8]) 
     ])
 }
 
+/// A page painting the transparency-group form `/F` (content `form_content`) under the soft
+/// mask `/Mk` (white over x 100..200, y 100..300), with `/Off` (`/SMask /None`) in the form's
+/// resources.
+fn masked_group_page(form_content: &[u8]) -> RasteredPage {
+    let mask = b"1 g 100 100 100 200 re f";
+    render(
+        &assemble(vec![
+            b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+            b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+            format!(
+                "<</Type/Page/Parent 2 0 R{A4}/Resources<</ExtGState<</Mk<</SMask                 <</Type/Mask/S/Luminosity/G 5 0 R>>>>>>/XObject<</F 6 0 R>>>>                 /Contents 4 0 R>>"
+            )
+            .into_bytes(),
+            stream_object("<</Length 13>>", b"/Mk gs /F Do  "),
+            stream_object(
+                &format!(
+                    "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Group<</S/Transparency>>                      /Length {}>>",
+                    mask.len()
+                ),
+                mask,
+            ),
+            stream_object(
+                &format!(
+                    "<</Type/XObject/Subtype/Form/BBox[0 0 595 842]/Group<</S/Transparency>>                      /Resources<</ExtGState<</Off<</SMask/None>>>>>>/Length {}>>",
+                    form_content.len()
+                ),
+                form_content,
+            ),
+        ]),
+        &PT,
+    )
+}
+
+#[test]
+fn a_soft_mask_applies_to_a_whole_group_whatever_its_content_sets() {
+    // The form resets the soft mask to none and paints red over the page; the mask in effect
+    // where the form is painted still shows only the part of the group inside it.
+    let page = masked_group_page(b"/Off gs 1 0 0 rg 0 0 595 842 re f");
+    assert!(
+        near(px(&page, 150, 842 - 200), RED),
+        "{:?}",
+        px(&page, 150, 642)
+    );
+    assert!(
+        near(px(&page, 400, 842 - 600), WHITE),
+        "{:?}",
+        px(&page, 400, 242)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
 /// Red over the whole page, painted under the soft mask `/Mk`.
 const RED_PAGE: &[u8] = b"/Mk gs 1 0 0 rg 0 0 595 842 re f";
 /// The mask group's shape: x 100..200, y 100..300.

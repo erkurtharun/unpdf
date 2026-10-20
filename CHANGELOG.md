@@ -11,6 +11,12 @@
 
 ### Fixed
 
+- **A soft mask applies to a whole transparency group.** A Form XObject with a `/Group`
+  painted while a soft mask is set was masked object by object, so a group whose own content
+  sets `/SMask /None` (how a drop shadow is commonly built) lost the mask and came out as a
+  hard dark block instead of a soft edge. The group is now painted on a layer and composited
+  through the mask, and the mask starts at none inside it (ISO 32000-1 §11.6.6).
+
 - **A CMYK JPEG is read as the ink amounts it holds, `/Decode` applied.** A four-component
   `DCTDecode` image was converted by the JPEG decoder as if its values were inverted ink and its
   `/Decode` array was ignored, so a YCCK photograph from a layout program (Adobe-marked, no

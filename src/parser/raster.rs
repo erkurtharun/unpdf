@@ -283,6 +283,15 @@ impl PaintSpace {
     }
 }
 
+/// A transparency group painted on a layer of its own: the pixmap underneath it, and the
+/// alpha, blend mode and soft mask it is composited onto that with when it ends.
+struct GroupLayer {
+    under: Pixmap,
+    alpha: f32,
+    blend: BlendMode,
+    soft_mask: Option<Rc<Mask>>,
+}
+
 /// The graphics state (ISO 32000-1 §8.4) as far as painting needs it.
 #[derive(Clone)]
 struct GState {
@@ -389,7 +398,7 @@ struct Painter<'a> {
     /// The transparency groups being painted, innermost last: for one painted on a layer of
     /// its own, the pixmap underneath it and the alpha it is composited with; `None` for one
     /// painted in place.
-    groups: Vec<Option<(Pixmap, f32, BlendMode)>>,
+    groups: Vec<Option<GroupLayer>>,
     /// Painting a shape that takes its color from outside: a Type 3 glyph procedure that
     /// began with `d1`, or the cell of an uncolored tiling pattern. Its own color operators
     /// are ignored.
@@ -978,27 +987,39 @@ impl Painter<'_> {
     }
 
     /// A transparency group begins (ISO 32000-1 §11.6.6). A group painted with an alpha below
-    /// one, or with a blend mode, goes on a layer of its own, which is composited with that
-    /// alpha and blend mode when it ends -- so overlapping things inside it do not show
-    /// through one another, and an alpha the group sets inside itself does not undo the one
-    /// it is painted with. Inside, the alpha starts at one and the blend mode at Normal. A
+    /// one, with a blend mode or under a soft mask goes on a layer of its own, which is
+    /// composited with that alpha, blend mode and mask when it ends -- so overlapping things
+    /// inside it do not show through one another, and an alpha the group sets inside itself
+    /// does not undo the one it is painted with. Inside, the alpha starts at one, the blend
+    /// mode at Normal and the soft mask at none (a soft mask the group's own content sets
+    /// does not undo the one it is painted with either). A
     /// fully opaque, normally blended group is painted in place, which is the same picture;
     /// so is one nested past `MAX_GROUP_LAYERS`, to bound the memory layers take.
     fn begin_group(&mut self) {
         const MAX_GROUP_LAYERS: usize = 4;
         let alpha = self.state.fill_alpha;
         let blend = self.state.blend;
+        let soft_mask = self.state.soft_mask.clone();
         let layered = self.groups.iter().filter(|g| g.is_some()).count();
-        let layer = ((alpha < 1.0 || blend != BlendMode::SourceOver) && layered < MAX_GROUP_LAYERS)
+        let layer = ((alpha < 1.0 || blend != BlendMode::SourceOver || soft_mask.is_some())
+            && layered < MAX_GROUP_LAYERS)
             .then(|| Pixmap::new(self.pixmap.width(), self.pixmap.height()))
             .flatten();
         match layer {
             Some(layer) => {
                 let under = std::mem::replace(&mut self.pixmap, layer);
-                self.groups.push(Some((under, alpha, blend)));
+                self.groups.push(Some(GroupLayer {
+                    under,
+                    alpha,
+                    blend,
+                    soft_mask,
+                }));
                 self.state.fill_alpha = 1.0;
                 self.state.stroke_alpha = 1.0;
                 self.state.blend = BlendMode::SourceOver;
+                // The soft mask applies to the group's result, not to what is painted inside.
+                self.state.soft_mask = None;
+                self.refresh_masked_clip();
             }
             None => self.groups.push(None),
         }
@@ -1007,7 +1028,13 @@ impl Painter<'_> {
     /// The innermost transparency group ends: its layer, if it has one, is composited onto
     /// what is underneath with the group's alpha.
     fn end_group(&mut self) {
-        if let Some(Some((under, alpha, blend))) = self.groups.pop() {
+        if let Some(Some(GroupLayer {
+            under,
+            alpha,
+            blend,
+            soft_mask,
+        })) = self.groups.pop()
+        {
             let group = std::mem::replace(&mut self.pixmap, under);
             self.pixmap.draw_pixmap(
                 0,
@@ -1019,7 +1046,7 @@ impl Painter<'_> {
                     ..PixmapPaint::default()
                 },
                 Transform::identity(),
-                None,
+                soft_mask.as_deref(),
             );
         }
     }
