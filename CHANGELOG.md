@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **.NET: `UnpdfDocument.OpenFile` / `OpenBytes` and `PageCount`.** The same open-without-extracting
+  path Python's `Document` has: opening reads the file's structure, the content is extracted the
+  first time something asks for it, and `PageCount` (the page tree, whatever `ParseOptions` selects)
+  and `RenderPage` need no extraction.
+
 ## 0.47.0 — 2026-10-20
 
 ### Added

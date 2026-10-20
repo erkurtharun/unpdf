@@ -358,6 +358,52 @@ public class UnpdfDocument : IDisposable
     }
 
     /// <summary>
+    /// Open a document from a file path without extracting it.
+    /// </summary>
+    /// <remarks>
+    /// Opening reads the file's structure (and decrypts it with a password); the content is
+    /// extracted the first time something asks for it, with <paramref name="options"/>.
+    /// <see cref="PageCount"/> and <see cref="RenderPage"/> never need it, so counting or
+    /// rendering the pages of a large file costs no extraction.
+    /// </remarks>
+    /// <exception cref="UnpdfException">If the file cannot be opened</exception>
+    /// <exception cref="FileNotFoundException">If file doesn't exist</exception>
+    public static UnpdfDocument OpenFile(string path, ParseOptions? options = null)
+    {
+        if (!System.IO.File.Exists(path))
+            throw new System.IO.FileNotFoundException($"File not found: {path}", path);
+
+        var handle = NativeMethods.unpdf_open_file_with_options(path, options?.ToJson());
+        if (handle == IntPtr.Zero)
+            throw Failure($"Failed to open {path}");
+
+        return new UnpdfDocument(handle);
+    }
+
+    /// <summary>
+    /// Open a document from a byte array without extracting it; see <see cref="OpenFile"/>.
+    /// </summary>
+    /// <exception cref="UnpdfException">If the document cannot be opened</exception>
+    public static UnpdfDocument OpenBytes(byte[] data, ParseOptions? options = null)
+    {
+        var dataPtr = Marshal.AllocHGlobal(data.Length);
+        try
+        {
+            Marshal.Copy(data, 0, dataPtr, data.Length);
+            var handle = NativeMethods.unpdf_open_bytes_with_options(
+                dataPtr, (UIntPtr)data.Length, options?.ToJson());
+            if (handle == IntPtr.Zero)
+                throw Failure("Failed to open bytes");
+
+            return new UnpdfDocument(handle);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(dataPtr);
+        }
+    }
+
+    /// <summary>
     /// Convert the document to Markdown.
     /// </summary>
     /// <param name="options">Optional rendering options</param>
@@ -456,6 +502,23 @@ public class UnpdfDocument : IDisposable
             var count = NativeMethods.unpdf_section_count(_handle);
             if (count < 0)
                 throw Failure("Failed to get section count");
+            return count;
+        }
+    }
+
+    /// <summary>
+    /// The number of pages in the document's page tree -- every page, whatever
+    /// <see cref="ParseOptions"/> selects for extraction (<see cref="SectionCount"/> counts the
+    /// pages extracted). Needs no extraction.
+    /// </summary>
+    public int PageCount
+    {
+        get
+        {
+            ThrowIfDisposed();
+            var count = NativeMethods.unpdf_page_count(_handle);
+            if (count < 0)
+                throw Failure("Failed to get page count");
             return count;
         }
     }

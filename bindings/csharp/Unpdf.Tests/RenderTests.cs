@@ -26,6 +26,31 @@ public class RenderTests
     }
 
     [Fact]
+    public void OpenBytes_CountsAndRendersPagesWithoutExtracting()
+    {
+        using var doc = UnpdfDocument.OpenBytes(PdfFixtures.ImageOnlyPdf());
+        Assert.Equal(1, doc.PageCount);
+        var page = doc.RenderPage(1, new RenderPageOptions { Dpi = 72 });
+        Assert.Equal(595, page.Width);
+    }
+
+    [Fact]
+    public void OpenBytes_ExtractsOnTheFirstCallThatNeedsTheContent()
+    {
+        using var opened = UnpdfDocument.OpenBytes(PdfFixtures.TextPdf());
+        using var parsed = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());
+        Assert.Equal(parsed.ToMarkdown(), opened.ToMarkdown());
+        Assert.Equal(parsed.SectionCount, opened.SectionCount);
+    }
+
+    [Fact]
+    public void OpenBytes_ARandomBufferIsRefused()
+    {
+        var ex = Assert.Throws<UnpdfException>(() => UnpdfDocument.OpenBytes(new byte[] { 1, 2, 3, 4 }));
+        Assert.NotEqual(UnpdfErrorKind.None, ex.Kind);
+    }
+
+    [Fact]
     public void RenderPage_AStandardFontThatIsNotEmbedded_IsDrawnInAStandInFace()
     {
         using var doc = UnpdfDocument.ParseBytes(PdfFixtures.TextPdf());

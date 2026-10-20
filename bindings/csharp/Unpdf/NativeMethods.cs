@@ -87,6 +87,30 @@ internal static class NativeMethods
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson);
 
     /// <summary>
+    /// Open a document from a file path without extracting it. <paramref name="optionsJson"/>
+    /// may be <see langword="null"/> (defaults).
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr unpdf_open_file_with_options(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson);
+
+    /// <summary>
+    /// Open a document from a byte buffer without extracting it.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr unpdf_open_bytes_with_options(
+        IntPtr data,
+        UIntPtr len,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? optionsJson);
+
+    /// <summary>
+    /// Number of pages in the page tree (-1 on error); needs no extraction.
+    /// </summary>
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern int unpdf_page_count(IntPtr doc);
+
+    /// <summary>
     /// Free a document handle.
     /// </summary>
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
