@@ -19,6 +19,23 @@ const fn pdf_limits(expected: u64) -> InflateLimits {
     }
 }
 
+/// The most output an image's declared size excuses from the ratio check: a 10 000 x 10 000
+/// RGB picture is 300 MB, and a hostile dictionary can declare any size.
+const IMAGE_GRACE_CAP: u64 = 256 << 20;
+
+/// `limits` with no ratio check up to `floor` bytes of output (at most [`IMAGE_GRACE_CAP`], and
+/// never past `max_size`): an image says how big its samples are, so a stream that decodes to
+/// no more than that is not a bomb however well it compresses. MuPDF checks no ratio there
+/// either: it decodes an image stream as the image is read, bounded by its dimensions.
+fn with_floor(limits: InflateLimits, floor: u64) -> InflateLimits {
+    InflateLimits {
+        grace_size: limits
+            .grace_size
+            .max(floor.min(IMAGE_GRACE_CAP).min(limits.max_size)),
+        ..limits
+    }
+}
+
 const FLATE_LIMITS: InflateLimits = pdf_limits(3);
 const RUN_LENGTH_LIMITS: InflateLimits = pdf_limits(3);
 const LZW_LIMITS: InflateLimits = pdf_limits(2);
@@ -62,6 +79,16 @@ pub fn decompress(stream: &PdfStream) -> Result<Vec<u8>> {
 /// dictionary beside a filter array — not what the specification allows, but written —
 /// is taken as the parameters of the last filter, which is where a predictor belongs.
 pub fn decode(stream: &PdfStream) -> Result<Decoded> {
+    decode_up_to(stream, 0)
+}
+
+/// [`decode`] for an image whose samples are at most `expected_len` bytes: output up to that
+/// size is not ratio-checked (see [`with_floor`]); the absolute limit still applies.
+pub fn decode_image(stream: &PdfStream, expected_len: u64) -> Result<Decoded> {
+    decode_up_to(stream, expected_len)
+}
+
+fn decode_up_to(stream: &PdfStream, floor: u64) -> Result<Decoded> {
     let filters: Vec<&[u8]> = match dict_get(&stream.dict, b"Filter") {
         None | Some(PdfObject::Null) => Vec::new(),
         Some(PdfObject::Name(name)) => vec![name.as_slice()],
@@ -103,7 +130,7 @@ pub fn decode(stream: &PdfStream) -> Result<Decoded> {
                 codec: Some(codec),
             });
         }
-        data = decode_stage(name, &data, *parms)?;
+        data = decode_stage(name, &data, *parms, floor)?;
     }
     Ok(Decoded { data, codec: None })
 }
@@ -120,24 +147,24 @@ fn image_codec(name: &[u8]) -> Option<&'static str> {
 }
 
 /// Apply one lossless filter, with its predictor where the filter takes one.
-fn decode_stage(name: &[u8], data: &[u8], parms: Option<&PdfDict>) -> Result<Vec<u8>> {
+fn decode_stage(name: &[u8], data: &[u8], parms: Option<&PdfDict>, floor: u64) -> Result<Vec<u8>> {
     let predicted = |decoded: Vec<u8>| match parms {
         Some(parms) => apply_predictor(parms, &decoded),
         None => Ok(decoded),
     };
     match name {
-        b"FlateDecode" | b"Fl" => predicted(decompress_flate(data)?),
+        b"FlateDecode" | b"Fl" => predicted(decompress_flate(data, floor)?),
         b"LZWDecode" | b"LZW" => {
             let early_change = parms
                 .and_then(|p| dict_get(p, b"EarlyChange"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(1)
                 != 0;
-            predicted(decode_lzw(data, early_change)?)
+            predicted(decode_lzw(data, early_change, floor)?)
         }
         b"ASCIIHexDecode" | b"AHx" => decode_ascii_hex(data),
         b"ASCII85Decode" | b"A85" => decode_ascii85(data),
-        b"RunLengthDecode" | b"RL" => decode_run_length(data),
+        b"RunLengthDecode" | b"RL" => decode_run_length(data, floor),
         _ => Err(Error::PdfParse(format!(
             "unsupported filter: {}",
             String::from_utf8_lossy(name)
@@ -195,7 +222,7 @@ fn ascii85_group(digits: &[u8; 5]) -> Result<[u8; 4]> {
 
 /// `RunLengthDecode` (PDF 32000-1 §7.4.5): a length byte n below 128 copies the next
 /// n + 1 bytes, above 128 repeats the next byte 257 - n times, and 128 ends the data.
-fn decode_run_length(data: &[u8]) -> Result<Vec<u8>> {
+fn decode_run_length(data: &[u8], floor: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
     while let Some(&length) = data.get(i) {
@@ -210,7 +237,7 @@ fn decode_run_length(data: &[u8]) -> Result<Vec<u8>> {
             _ => {
                 if let Some(&byte) = data.get(i) {
                     out.extend(std::iter::repeat_n(byte, 257 - length as usize));
-                    RUN_LENGTH_LIMITS
+                    with_floor(RUN_LENGTH_LIMITS, floor)
                         .check(data.len() as u64, out.len() as u64)
                         .map_err(bomb)?;
                 }
@@ -224,7 +251,7 @@ fn decode_run_length(data: &[u8]) -> Result<Vec<u8>> {
 /// `LZWDecode` (PDF 32000-1 §7.4.4): variable-width codes from 9 to 12 bits, 256 clears
 /// the table and 257 ends the data. With `early_change` (the default) the code width
 /// grows one code earlier than the table strictly needs, as TIFF writers do.
-fn decode_lzw(data: &[u8], early_change: bool) -> Result<Vec<u8>> {
+fn decode_lzw(data: &[u8], early_change: bool, floor: u64) -> Result<Vec<u8>> {
     const CLEAR: usize = 256;
     const END: usize = 257;
     const MAX_CODES: usize = 4096;
@@ -275,7 +302,7 @@ fn decode_lzw(data: &[u8], early_change: bool) -> Result<Vec<u8>> {
             _ => return Err(Error::PdfParse(format!("invalid LZW code {code}"))),
         };
         out.extend_from_slice(&entry);
-        LZW_LIMITS
+        with_floor(LZW_LIMITS, floor)
             .check(data.len() as u64, out.len() as u64)
             .map_err(bomb)?;
         if let Some(prev) = previous {
@@ -297,11 +324,11 @@ fn decode_lzw(data: &[u8], early_change: bool) -> Result<Vec<u8>> {
     }
 }
 
-fn decompress_flate(data: &[u8]) -> Result<Vec<u8>> {
+fn decompress_flate(data: &[u8], floor: u64) -> Result<Vec<u8>> {
     // zlib first (what the specification writes), then raw deflate (some producers omit the
     // zlib header). Past its limits a stream is a bomb in any reading of it: no fallback runs.
     for zlib in [true, false] {
-        match read_flate(data, zlib) {
+        match read_flate(data, zlib, floor) {
             (Ok(()), output) => return Ok(output),
             (Err(e), _) if is_inflation_limit(&e) => return Err(bomb(e)),
             (Err(_), _) => {}
@@ -312,7 +339,7 @@ fn decompress_flate(data: &[u8]) -> Result<Vec<u8>> {
     // Some PDFs have trailing garbage, wrong /Length values, or minor stream
     // corruption. We try both zlib and raw deflate and return whatever partial
     // data was successfully decompressed.
-    match decompress_flate_partial(data)? {
+    match decompress_flate_partial(data, floor)? {
         Some(partial) => Ok(partial),
         None => Err(Error::PdfParse(
             "decompression failed: corrupt deflate stream".to_string(),
@@ -322,13 +349,14 @@ fn decompress_flate(data: &[u8]) -> Result<Vec<u8>> {
 
 /// Inflate `data` as zlib or as raw deflate under [`FLATE_LIMITS`]: how the reading ended, and
 /// the output — all of it, or what was decoded before the error.
-fn read_flate(data: &[u8], zlib: bool) -> (io::Result<()>, Vec<u8>) {
+fn read_flate(data: &[u8], zlib: bool, floor: u64) -> (io::Result<()>, Vec<u8>) {
     let decoder: Box<dyn Read + '_> = if zlib {
         Box::new(flate2::read::ZlibDecoder::new(data))
     } else {
         Box::new(flate2::read::DeflateDecoder::new(data))
     };
-    let mut reader = InflateGuard::with_limits(decoder, data.len() as u64, FLATE_LIMITS);
+    let mut reader =
+        InflateGuard::with_limits(decoder, data.len() as u64, with_floor(FLATE_LIMITS, floor));
     let mut output = Vec::new();
     let result = read_chunks(&mut reader, &mut output);
     (result, output)
@@ -350,14 +378,14 @@ fn read_chunks<R: Read>(reader: &mut R, output: &mut Vec<u8>) -> io::Result<()> 
 /// Attempt to decompress as much data as possible from a potentially corrupt or truncated
 /// flate stream: `Some(data)` with the longest output any reading of it produced before an
 /// error, `None` when none produced any — and an error when a reading passed the limits.
-fn decompress_flate_partial(data: &[u8]) -> Result<Option<Vec<u8>>> {
+fn decompress_flate_partial(data: &[u8], floor: u64) -> Result<Option<Vec<u8>>> {
     let mut best = Vec::new();
     // Both encodings, whole and with up to 8 trailing bytes stripped (some PDFs append extra
     // zeros or garbage).
     for trim in 0..=std::cmp::min(8, data.len().saturating_sub(1)) {
         let trimmed = &data[..data.len() - trim];
         for zlib in [true, false] {
-            let (result, output) = read_flate(trimmed, zlib);
+            let (result, output) = read_flate(trimmed, zlib, floor);
             if let Err(e) = result {
                 if is_inflation_limit(&e) {
                     return Err(bomb(e));
@@ -665,6 +693,22 @@ mod tests {
         let mut truncated = stream.raw_data.clone();
         truncated.truncate(truncated.len() - 4);
         assert!(decompress(&filtered(b"FlateDecode", truncated)).is_err());
+    }
+
+    #[test]
+    fn an_image_that_inflates_to_its_declared_size_is_not_a_bomb_however_well_it_compresses() {
+        // 128 MiB of one value in a few hundred KiB: past the ratio rule (a few-thousandfold),
+        // but exactly what a large flat plot of that size holds.
+        let samples = vec![200u8; 128 << 20];
+        let stream = filtered(b"FlateDecode", zlib(&samples));
+        assert!(
+            decode(&stream).is_err(),
+            "no declared size: the ratio rule refuses it"
+        );
+        let decoded = decode_image(&stream, samples.len() as u64).unwrap();
+        assert_eq!(decoded.data.len(), samples.len());
+        // A stream that inflates past what the image declares still is refused.
+        assert!(decode_image(&stream, 1 << 20).is_err());
     }
 
     #[test]

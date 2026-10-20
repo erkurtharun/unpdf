@@ -815,6 +815,34 @@ fn a_one_colorant_devicen_with_a_calculator_transform_reads_as_its_ink() {
     assert!(near(at(350, 150), [35, 31, 32]), "{:?}", at(350, 150));
 }
 
+#[test]
+fn a_color_key_mask_hides_the_pixels_inside_its_ranges() {
+    // Two pixels, white and red; every sample of white is in [255 255]: that pixel is not
+    // painted and the green under it shows.
+    let image = stream_object(
+        "<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace/DeviceRGB/BitsPerComponent 8          /Mask[255 255 255 255 255 255]/Length 6>>",
+        &[255, 255, 255, 255, 0, 0],
+    );
+    let page = render(
+        &page_pdf_with_xobjects(
+            A4,
+            b"0 1 0 rg 0 0 595 842 re f q 200 0 0 100 50 50 cm /J Do Q",
+            vec![("J", image)],
+        ),
+        &PT,
+    );
+    assert!(
+        near(px(&page, 70, 842 - 100), [0, 255, 0]),
+        "{:?}",
+        px(&page, 70, 742)
+    );
+    assert!(
+        near(px(&page, 230, 842 - 100), RED),
+        "{:?}",
+        px(&page, 230, 742)
+    );
+}
+
 /// A 16 x 8 fax image, white on the left half and black on the right, as MuPDF renders it:
 /// Group 4, and Group 3 one-dimensional with end-of-line codes (both written by libtiff).
 const G4_HALVES: &[u8] = &[0x33, 0x17, 0xff, 0xf0, 0x01, 0x00, 0x10];

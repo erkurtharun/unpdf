@@ -161,7 +161,58 @@ impl RawDocument {
             }
         }
 
+        doc.inline_filter_references();
         Ok(doc)
+    }
+
+    /// Replace the indirect references in every stream's `/Filter` and `/DecodeParms` (the
+    /// entry, or the entries of its array) with the objects they name. The filter chain is
+    /// applied by a function that sees only the stream, so a predictor written as
+    /// `/DecodeParms 8 0 R` -- what many producers do -- would otherwise never be applied.
+    fn inline_filter_references(&mut self) {
+        const KEYS: [&[u8]; 2] = [b"Filter", b"DecodeParms"];
+        let is_reference = |obj: &PdfObject| matches!(obj, PdfObject::Reference(..));
+        let needs_inlining = |obj: &PdfObject| match obj {
+            PdfObject::Stream(stream) => KEYS.iter().any(|key| match stream.dict.get(*key) {
+                Some(PdfObject::Array(items)) => items.iter().any(is_reference),
+                Some(other) => is_reference(other),
+                None => false,
+            }),
+            _ => false,
+        };
+        let ids: Vec<(u32, u16)> = self
+            .objects
+            .iter()
+            .filter(|(_, obj)| needs_inlining(obj))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let mut inlined: Vec<(&[u8], PdfObject)> = Vec::new();
+            if let Some(PdfObject::Stream(stream)) = self.objects.get(&id) {
+                for key in KEYS {
+                    let Some(value) = stream.dict.get(key) else {
+                        continue;
+                    };
+                    inlined.push((
+                        key,
+                        match self.resolve(value) {
+                            PdfObject::Array(items) => PdfObject::Array(
+                                items
+                                    .iter()
+                                    .map(|item| self.resolve(item).clone())
+                                    .collect(),
+                            ),
+                            other => other.clone(),
+                        },
+                    ));
+                }
+            }
+            if let Some(PdfObject::Stream(stream)) = self.objects.get_mut(&id) {
+                for (key, value) in inlined {
+                    stream.dict.insert(key.to_vec(), value);
+                }
+            }
+        }
     }
 
     /// Attempt decryption with the empty user password, then with `password` if given.

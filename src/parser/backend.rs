@@ -311,6 +311,10 @@ pub struct RawXObject {
     pub image_mask: bool,
     /// `/SMask`: a grayscale image giving each pixel's opacity.
     pub smask: Option<Box<RawXObject>>,
+    /// `/Mask` as an array (color key masking, ISO 32000-1 §8.9.6.4): a `[min max]` pair of raw
+    /// sample values per component; a pixel whose every component lies in its pair is not
+    /// painted.
+    pub color_key: Option<Vec<i64>>,
     /// What the image codec in `filter` reads besides `data`; `None` for a codec that reads
     /// nothing else, or when `data` is samples.
     pub codec_parms: Option<CodecParms>,
@@ -1640,14 +1644,28 @@ impl RawBackend {
         // samples); `filter` names the image codec still to apply, `None` when `data`
         // is samples. A chain that does not decode leaves the stream's bytes, marked
         // with the reason so they are never read as samples.
-        let (data, filter) = match raw_stream::decode(stream) {
-            Ok(decoded) => (decoded.data, decoded.codec.map(str::to_string)),
-            Err(_) => (stream.raw_data.clone(), Some(UNDECODED_IMAGE.to_string())),
-        };
         let int = |key: &[u8]| {
             raw_dict_get(dict, key)
                 .map(|v| self.doc.resolve(v))
                 .and_then(|v| v.as_i64())
+        };
+        // The most the samples can come to: the dictionary's size in rows of up to four
+        // components, a byte per row more for a predictor's tags. A stream that inflates to no
+        // more than that is no bomb however well it compresses (a plot with large flat areas).
+        let expected = match (int(b"Width"), int(b"Height"), int(b"BitsPerComponent")) {
+            (Some(w), Some(h), bpc) if w > 0 && h > 0 => {
+                let row = (w
+                    .saturating_mul(4)
+                    .saturating_mul(bpc.unwrap_or(8).clamp(1, 16))
+                    + 7)
+                    / 8;
+                u64::try_from(row.saturating_add(1).saturating_mul(h)).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        let (data, filter) = match raw_stream::decode_image(stream, expected) {
+            Ok(decoded) => (decoded.data, decoded.codec.map(str::to_string)),
+            Err(_) => (stream.raw_data.clone(), Some(UNDECODED_IMAGE.to_string())),
         };
         let image_mask = matches!(
             raw_dict_get(dict, b"ImageMask").map(|v| self.doc.resolve(v)),
@@ -1687,6 +1705,12 @@ impl RawBackend {
             decode: raw_dict_get(dict, b"Decode").and_then(|d| numbers_from(&self.doc, d)),
             image_mask,
             smask,
+            color_key: raw_dict_get(dict, b"Mask").and_then(|m| match self.doc.resolve(m) {
+                RawPdfObject::Array(items) => {
+                    items.iter().map(|v| self.doc.resolve(v).as_i64()).collect()
+                }
+                _ => None,
+            }),
             codec_parms,
         }
     }

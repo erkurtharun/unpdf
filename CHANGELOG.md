@@ -11,6 +11,22 @@
 
 ### Fixed
 
+- **A predictor named by an indirect `/DecodeParms` is applied.** A stream whose `/DecodeParms`
+  (or `/Filter`) is an indirect reference -- written that way by many producers -- never had its
+  predictor undone, so a PNG-predicted image came out as its row differences: a figure drawn as
+  diagonal edges on black. The references in a stream's filter entries are resolved when the
+  document is loaded.
+
+- **A large, flat image is no decompression bomb.** The ratio rule for inflated output (MuPDF's
+  `fz_read_best`, 600 times for Flate past 100 MiB) refused a 142 MB plot that compresses 700
+  times, and the picture was not drawn. An image stream that inflates to no more than its
+  dimensions say (capped at 256 MiB, as MuPDF reads image streams bounded by their size, not
+  their ratio) is not ratio-checked; a stream that inflates past it still is.
+
+- **Color key masking.** An image's `/Mask` given as an array of sample ranges (ISO 32000-1
+  §8.9.6.4) hides the pixels inside them; it was ignored, so a plot whose background is the key
+  color covered what was under it.
+
 - **`DeviceN` colors, PostScript tint transforms and gray JPEGs in a tint space.** A `DeviceN`
   space of several colorants, and a `Separation`/`DeviceN` whose tint transform is a PostScript
   calculator function (function type 4, ISO 32000-1 §7.10.5) -- the form layout programs write

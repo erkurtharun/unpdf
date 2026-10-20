@@ -1578,6 +1578,14 @@ impl Painter<'_> {
                 }
             }
         }
+        // Color key masking: a pixel whose samples all lie in the key's ranges is not painted.
+        if let Some(hits) = color_key_hits(image, w, h) {
+            for (px, hit) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(hits) {
+                if hit {
+                    px[3] = 0;
+                }
+            }
+        }
         // Premultiply.
         for px in rgba.as_chunks_mut::<4>().0 {
             let a = u16::from(px[3]);
@@ -1785,6 +1793,41 @@ fn decode_jpeg(
         rgb.extend([r, g, b].map(|v| (v * 255.0).round() as u8));
     }
     Some((PngColorType::Rgb, rgb))
+}
+
+/// Which pixels the image's `/Mask` color key hides, `None` when it has none (or the samples
+/// are not plain ones: a JPEG's are masked after decoding, which no producer writes).
+fn color_key_hits(image: &RawXObject, w: u32, h: u32) -> Option<Vec<bool>> {
+    let key = image.color_key.as_deref()?;
+    let bpc = usize::from(image.bits_per_component?);
+    let components = key.len() / 2;
+    if components == 0 || key.len() % 2 != 0 || !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
+        return None;
+    }
+    let samples = plain_samples(image, w, h)?;
+    let row_bytes = (w as usize * components * bpc).div_ceil(8);
+    let sample = |row: &[u8], index: usize| -> Option<i64> {
+        let bit = index * bpc;
+        let byte = *row.get(bit / 8)?;
+        Some(match bpc {
+            16 => i64::from(byte) << 8 | i64::from(*row.get(bit / 8 + 1)?),
+            8 => i64::from(byte),
+            _ => i64::from((byte >> (8 - bpc - bit % 8)) & ((1 << bpc) - 1)),
+        })
+    };
+    let mut hits = Vec::with_capacity(w as usize * h as usize);
+    for y in 0..h as usize {
+        let row = samples.get(y * row_bytes..(y + 1) * row_bytes)?;
+        for x in 0..w as usize {
+            let mut inside = true;
+            for c in 0..components {
+                let v = sample(row, x * components + c)?;
+                inside &= key[2 * c] <= v && v <= key[2 * c + 1];
+            }
+            hits.push(inside);
+        }
+    }
+    Some(hits)
 }
 
 /// The samples of a one-component JPEG, `None` for any other.

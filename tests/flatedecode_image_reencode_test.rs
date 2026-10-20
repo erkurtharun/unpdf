@@ -184,6 +184,28 @@ fn only_png(bytes: &[u8]) -> (png::ColorType, Vec<u8>) {
 }
 
 #[test]
+fn a_predictor_named_by_an_indirect_decode_parms_is_applied() {
+    // `/DecodeParms 6 0 R`: PNG Sub filtering (type 1) of the 2 x 2 RGB pixels, each row's
+    // second pixel stored as its difference from the first.
+    let filtered = [
+        1u8, 255, 0, 0, 1, 255, 0, // red, then green - red
+        1, 0, 0, 255, 255, 255, 0, // blue, then white - blue
+    ];
+    let compressed = deflate(&filtered);
+    let image_obj = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceRGB              /BitsPerComponent 8/Filter/FlateDecode/DecodeParms 6 0 R/Length {}>>",
+            compressed.len()
+        ),
+        &compressed,
+    );
+    let parms = b"<</Predictor 15/Colors 3/Columns 2>>".to_vec();
+    let (color_type, pixels) = only_png(&one_page_with_image(image_obj, Some(parms)));
+    assert_eq!(color_type, png::ColorType::Rgb);
+    assert_eq!(pixels, rgb_2x2_pixels());
+}
+
+#[test]
 fn flatedecode_cmyk_image_is_converted_to_rgb() {
     // cyan, magenta / yellow, black
     let samples = [255u8, 0, 0, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 0, 0, 255];
