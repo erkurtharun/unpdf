@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.47.0 — 2026-10-20
+
 ### Added
 
 - **A document can be opened without extracting it.** `unpdf_open_file_with_options` /
