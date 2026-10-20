@@ -1617,7 +1617,7 @@ fn downsample(pixmap: Pixmap, target: (f32, f32)) -> Pixmap {
 /// An image's samples as 8-bit gray or RGB pixels, decoding the codecs this reads.
 fn decode_samples(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
     match image.filter.as_deref() {
-        Some("DCTDecode") => return decode_jpeg(&image.data, w, h),
+        Some("DCTDecode") => return decode_jpeg(&image.data, w, h, image.decode.as_deref()),
         Some("JPXDecode") => return decode_jpx(image, w, h),
         _ => {}
     }
@@ -1663,27 +1663,87 @@ fn plain_samples(image: &RawXObject, w: u32, h: u32) -> Option<std::borrow::Cow<
 }
 
 /// Decode a JPEG to gray or RGB pixels of the size the image dictionary declares.
-fn decode_jpeg(data: &[u8], w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
+///
+/// A four-component JPEG (`DeviceCMYK`) is read as the ink amounts it holds, `/Decode` applied
+/// (`[1 0 1 0 1 0 1 0]` is how a PDF says Photoshop's inverted CMYK is to be read), and
+/// converted by the same naive formula as every other CMYK source. YCCK is first turned into
+/// CMYK the way libjpeg does (`C = 255 - R` of the YCbCr triple), so an Adobe-marked file
+/// with no `/Decode` -- what many layout programs write -- keeps its light and dark.
+fn decode_jpeg(
+    data: &[u8],
+    w: u32,
+    h: u32,
+    decode: Option<&[f32]>,
+) -> Option<(PngColorType, Vec<u8>)> {
     use zune_jpeg::zune_core::bytestream::ZCursor;
     use zune_jpeg::zune_core::colorspace::ColorSpace;
     use zune_jpeg::zune_core::options::DecoderOptions;
 
     // The dictionary's size bounds what the decoder may allocate: a JPEG whose own header says
     // more is refused before its pixels are, not after.
-    if !png_encode::decodable(w, h, 3) {
+    if !png_encode::decodable(w, h, 4) {
         return None;
     }
-    let options = DecoderOptions::default()
-        .jpeg_set_out_colorspace(ColorSpace::RGB)
-        .set_max_width(w as usize)
-        .set_max_height(h as usize);
-    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let options = |out: ColorSpace| {
+        DecoderOptions::default()
+            .jpeg_set_out_colorspace(out)
+            .set_max_width(w as usize)
+            .set_max_height(h as usize)
+    };
+    let mut decoder =
+        zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options(ColorSpace::RGB));
+    decoder.decode_headers().ok()?;
+    let input = decoder.input_colorspace()?;
+    let four = matches!(input, ColorSpace::CMYK | ColorSpace::YCCK);
+    if four {
+        decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options(input));
+    }
     let pixels = decoder.decode().ok()?;
     let info = decoder.info()?;
     if (u32::from(info.width), u32::from(info.height)) != (w, h) {
         return None;
     }
-    (pixels.len() == w as usize * h as usize * 3).then_some((PngColorType::Rgb, pixels))
+    let count = w as usize * h as usize;
+    if !four {
+        return (pixels.len() == count * 3).then_some((PngColorType::Rgb, pixels));
+    }
+    if pixels.len() != count * 4 {
+        return None;
+    }
+    // `/Decode` pairs per ink; the default `[0 1]` leaves a sample as it is.
+    let pair = |i: usize| match decode {
+        Some(d) if d.len() >= 8 => (d[2 * i], d[2 * i + 1]),
+        _ => (0.0, 1.0),
+    };
+    let pairs = [pair(0), pair(1), pair(2), pair(3)];
+    let mut rgb = Vec::with_capacity(count * 3);
+    for px in pixels.as_chunks::<4>().0 {
+        let ink: [f32; 4] = if input == ColorSpace::YCCK {
+            let (y, cb, cr) = (
+                f32::from(px[0]),
+                f32::from(px[1]) - 128.0,
+                f32::from(px[2]) - 128.0,
+            );
+            let r = y + 1.402 * cr;
+            let g = y - 0.344_136 * cb - 0.714_136 * cr;
+            let b = y + 1.772 * cb;
+            [255.0 - r, 255.0 - g, 255.0 - b, f32::from(px[3])]
+        } else {
+            px.map(f32::from)
+        };
+        let k = 1.0 - ink_amount(ink[3], pairs[3]);
+        for (i, &v) in ink[..3].iter().enumerate() {
+            let c = 1.0 - ink_amount(v, pairs[i]);
+            rgb.push((c * k * 255.0).round().clamp(0.0, 255.0) as u8);
+        }
+    }
+    Some((PngColorType::Rgb, rgb))
+}
+
+/// An ink's amount in `0..=1` from its 8-bit sample (as decoded, possibly out of range for a
+/// converted YCCK) and `/Decode` pair.
+fn ink_amount(sample: f32, (lo, hi): (f32, f32)) -> f32 {
+    (lo + sample.clamp(0.0, 255.0) / 255.0 * (hi - lo)).clamp(0.0, 1.0)
 }
 
 /// A paint whose shader is `shading`, its shading space mapped by `transform` into the space

@@ -11,6 +11,13 @@
 
 ### Fixed
 
+- **A CMYK JPEG is read as the ink amounts it holds, `/Decode` applied.** A four-component
+  `DCTDecode` image was converted by the JPEG decoder as if its values were inverted ink and its
+  `/Decode` array was ignored, so a YCCK photograph from a layout program (Adobe-marked, no
+  `/Decode`) rendered nearly black while a file with `/Decode [1 0 1 0 1 0 1 0]` only came out
+  right by accident. YCCK is now turned into CMYK the way libjpeg does, `/Decode` is applied,
+  and the inks convert like every other CMYK source.
+
 - **`Separation` colors come out in the color they stand for.** A color set in a `Separation`
   space (a spot ink such as a brand color) was read as a tint from white to black, so a spot
   green rendered black -- headings, rules, table headers and header bands lost their color in

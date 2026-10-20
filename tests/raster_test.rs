@@ -492,6 +492,58 @@ fn a_jpeg_image_is_decoded() {
     assert!(page.gaps.is_empty(), "{:?}", page.gaps);
 }
 
+/// A page drawing a 16 x 8 CMYK JPEG over x 50..250, y 50..150, with `entries` in its dictionary.
+fn cmyk_jpeg_page(jpeg: &[u8], entries: &str) -> RasteredPage {
+    let image = stream_object(
+        &format!(
+            "<</Type/XObject/Subtype/Image/Width 16/Height 8/ColorSpace/DeviceCMYK              /BitsPerComponent 8/Filter/DCTDecode{entries}/Length {}>>",
+            jpeg.len()
+        ),
+        jpeg,
+    );
+    render(
+        &page_pdf_with_xobjects(A4, b"q 200 0 0 100 50 50 cm /J Do Q", vec![("J", image)]),
+        &PT,
+    )
+}
+
+#[test]
+fn a_cmyk_jpeg_is_read_through_its_decode_array() {
+    // Written the way Photoshop does: stored inverted (255 = no ink), left white, right cyan.
+    let jpeg = include_bytes!("fixtures/halves_white_cyan_16x8_cmyk.jpg");
+    let page = cmyk_jpeg_page(jpeg, "/Decode[1 0 1 0 1 0 1 0]");
+    assert!(
+        near(px(&page, 80, 842 - 100), WHITE),
+        "{:?}",
+        px(&page, 80, 742)
+    );
+    assert!(
+        near(px(&page, 220, 842 - 100), [0, 255, 255]),
+        "{:?}",
+        px(&page, 220, 742)
+    );
+    assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+}
+
+#[test]
+fn a_ycck_jpeg_without_a_decode_array_keeps_its_light_and_dark() {
+    // Adobe transform 2 (YCCK): left (Y 200, Cb 128, Cr 128, K 0), right (100, 128, 128, 128).
+    // libjpeg's conversion gives C = M = Y' = 255 - Y, read as ink amounts: gray 200, and
+    // 100 under half a K ink (about 50).
+    let jpeg = include_bytes!("fixtures/halves_ycck_16x8.jpg");
+    let page = cmyk_jpeg_page(jpeg, "");
+    assert!(
+        near(px(&page, 80, 842 - 100), [200, 200, 200]),
+        "{:?}",
+        px(&page, 80, 742)
+    );
+    assert!(
+        near(px(&page, 220, 842 - 100), [50, 50, 50]),
+        "{:?}",
+        px(&page, 220, 742)
+    );
+}
+
 /// A page drawing the 4 x 2 red JPEG over x 50..250, y 50..150 with `/SMask` object `mask`
 /// (the second XObject, object 6).
 fn masked_jpeg_page(mask: Vec<u8>) -> RasteredPage {
