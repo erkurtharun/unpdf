@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- **Codes a font draws but gives no character have a reason of their own.** A Type 3 font, or
+  one that embeds its program, may leave a glyph without text on purpose: a `ToUnicode` that
+  maps one code to a whole emoji cluster and leaves out the cluster's other glyphs, or a
+  symbolic TrueType subset with no `/Encoding` and no `ToUnicode`. Such runs of control codes
+  were reported as `binary_density`, the reason for a decode that came out as noise. They are
+  now `TextSuppression::UnmappedCodes`, serialized as `unmapped_codes` in
+  `Page::unreadable_fonts`, the `unpdf_page_stats` JSON, `PageStats.UnreadableFonts` in C# and
+  `get_page_stats` in Python; they still count in `suppressed_text_runs`.
+
 ### Fixed
 
 - **Every package carries the third-party notices for the data it builds in.** Adobe's CMap
