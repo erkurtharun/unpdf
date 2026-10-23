@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A ligature glyph name in `/Differences` reads as its letters.** The Adobe Glyph List names a
+  ligature by its components, joined by underscores (`f_t`, `T_h`) or as several code points after
+  `uni` (`uni00660069`). Such a name mapped to nothing, so the code kept its base encoding's
+  character: `The` read as `€e`, and `fi` dropped out. Each name now maps to the letters it joins,
+  in text and in a standard font's widths.
+
 ## 0.48.0 — 2026-10-20
 
 ### Added

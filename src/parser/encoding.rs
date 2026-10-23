@@ -35,6 +35,9 @@ impl BaseEncoding {
     }
 }
 
+/// What each code of a simple font stands for, a ligature's letters included.
+pub(crate) type EncodingMap = HashMap<u8, String>;
+
 /// Build a complete encoding map: start from a base encoding,
 /// then apply Differences array overrides.
 ///
@@ -43,21 +46,21 @@ impl BaseEncoding {
 pub(crate) fn build_encoding_map(
     base: Option<BaseEncoding>,
     differences: &[(u8, String)],
-) -> HashMap<u8, char> {
+) -> EncodingMap {
     let mut map = HashMap::new();
 
     // Populate from base encoding
     let base = base.unwrap_or(BaseEncoding::Standard);
     for code in 0u16..=255 {
         if let Some(ch) = base.decode_char(code as u8) {
-            map.insert(code as u8, ch);
+            map.insert(code as u8, ch.to_string());
         }
     }
 
     // Apply differences overrides
     for (code, glyph_name) in differences {
-        if let Some(ch) = glyph_name_to_unicode(glyph_name) {
-            map.insert(*code, ch);
+        if let Some(text) = glyph_name_to_text(glyph_name) {
+            map.insert(*code, text);
         }
     }
 
@@ -65,11 +68,11 @@ pub(crate) fn build_encoding_map(
 }
 
 /// Decode a byte sequence using an encoding map.
-pub(crate) fn decode_with_encoding_map(bytes: &[u8], map: &HashMap<u8, char>) -> String {
+pub(crate) fn decode_with_encoding_map(bytes: &[u8], map: &EncodingMap) -> String {
     let mut result = String::with_capacity(bytes.len());
     for &b in bytes {
-        if let Some(&ch) = map.get(&b) {
-            result.push(ch);
+        if let Some(text) = map.get(&b) {
+            result.push_str(text);
         }
         // Skip unmapped codes silently
     }
@@ -706,22 +709,49 @@ const STANDARD_ENC: [Option<char>; 256] = {
 // Adobe Glyph List (AGL) — glyph name → Unicode (`agl_data`, generated)
 // ---------------------------------------------------------------------------
 
-/// Look up a glyph name in the Adobe Glyph List, returning its Unicode character.
+/// Look up a glyph name that names one character; a ligature of several (`f_t`) is `None`.
+pub(crate) fn glyph_name_to_unicode(name: &str) -> Option<char> {
+    single_char(&glyph_name_to_text(name)?)
+}
+
+pub(crate) fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
+}
+
+/// Look up a glyph name in the Adobe Glyph List, returning the text it stands for.
 ///
 /// Handles both the static AGL table and the algorithmic `uni`/`u` naming
 /// conventions per the AGL specification, including its first step: a suffix
 /// after the first period names a variant of the same character (`one.SP`,
 /// `a.smcp`, `uni0041.alt`), so it is dropped before the lookup. A name that is
-/// nothing but a suffix (`.notdef`) maps to no character.
-pub(crate) fn glyph_name_to_unicode(name: &str) -> Option<char> {
+/// nothing but a suffix (`.notdef`) maps to no character. Components joined by
+/// underscores (`f_t`) make a ligature of their letters.
+pub(crate) fn glyph_name_to_text(name: &str) -> Option<String> {
     let base = match name.find('.') {
         Some(dot) => &name[..dot],
         None => name,
     };
-    if base.is_empty() {
-        return None;
+    let text: String = base.split('_').filter_map(agl_component_to_text).collect();
+    (!text.is_empty()).then_some(text)
+}
+
+fn agl_component_to_text(name: &str) -> Option<String> {
+    if let Some(hex) = name.strip_prefix("uni") {
+        if hex.len() > 4 && hex.len() % 4 == 0 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return (0..hex.len())
+                .step_by(4)
+                .map(|at| {
+                    u32::from_str_radix(&hex[at..at + 4], 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .filter(|c| !c.is_control())
+                })
+                .collect();
+        }
     }
-    agl_component_to_unicode(base)
+    agl_component_to_unicode(name).map(String::from)
 }
 
 fn agl_component_to_unicode(name: &str) -> Option<char> {
@@ -853,7 +883,26 @@ mod tests {
     #[test]
     fn test_difference_with_variant_suffix_resolves() {
         let map = build_encoding_map(Some(BaseEncoding::WinAnsi), &[(0x13, "one.SP".to_string())]);
-        assert_eq!(map.get(&0x13), Some(&'1'));
+        assert_eq!(map.get(&0x13).map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn ligature_names_map_to_their_components() {
+        assert_eq!(glyph_name_to_text("T_h").as_deref(), Some("Th"));
+        assert_eq!(glyph_name_to_text("f_f_i").as_deref(), Some("ffi"));
+        assert_eq!(glyph_name_to_text("s_t.alt").as_deref(), Some("st"));
+        assert_eq!(glyph_name_to_text("uni00660069").as_deref(), Some("fi"));
+        assert_eq!(glyph_name_to_text("uni0066_uni0074").as_deref(), Some("ft"));
+        assert_eq!(glyph_name_to_text("f_nonexistent").as_deref(), Some("f"));
+        assert_eq!(glyph_name_to_text("uni0066D800"), None);
+        assert_eq!(glyph_name_to_text("uni00000004"), None);
+        assert_eq!(glyph_name_to_text("_"), None);
+        assert_eq!(glyph_name_to_unicode("f_t"), None);
+        let map = build_encoding_map(
+            Some(BaseEncoding::WinAnsi),
+            &[(0x80, "T_h".to_string()), (0x81, "uni00660069".to_string())],
+        );
+        assert_eq!(decode_with_encoding_map(&[0x80, b'e', 0x81], &map), "Thefi");
     }
 
     #[test]
@@ -881,10 +930,11 @@ mod tests {
         ];
         let map = build_encoding_map(Some(BaseEncoding::WinAnsi), &diffs);
 
-        assert_eq!(map.get(&0x41), Some(&'\u{00C1}')); // Á (overridden)
-        assert_eq!(map.get(&0x42), Some(&'\u{00C7}')); // Ç (overridden)
-        assert_eq!(map.get(&0x43), Some(&'C')); // C (from base)
-        assert_eq!(map.get(&0x20), Some(&' ')); // space (from base)
+        let get = |code| map.get(&code).map(String::as_str);
+        assert_eq!(get(0x41), Some("\u{00C1}")); // Á (overridden)
+        assert_eq!(get(0x42), Some("\u{00C7}")); // Ç (overridden)
+        assert_eq!(get(0x43), Some("C")); // C (from base)
+        assert_eq!(get(0x20), Some(" ")); // space (from base)
     }
 
     #[test]
