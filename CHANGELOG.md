@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **Page statistics tell what a page's text is.** `invisible_text_chars` and
+  `painted_text_chars` count the characters other than whitespace drawn in a rendering mode that
+  paints nothing (3, or 7, which only adds to the clipping path) and in one that paints them:
+  invisible text, as in the OCR layer of a searchable scan, is extracted although nothing on the
+  page shows it, and is still counted when the OCR layer was dropped (`ocr_text_suppressed`).
+  `margin_text_chars` counts the painted ones whose baseline is in the top or bottom tenth of the
+  page box, where a scan's running head or page number sits. `clipped_text_runs` counts text runs
+  the clipping path or the page box hides entirely, whose text is left out; `blank_text_runs`,
+  text runs that are only whitespace; `fill_op_count`, path-filling operators, as when glyphs are
+  drawn as filled outlines. All are in `Page`, the JSON output and the page stats of the C ABI,
+  .NET (`PageStats`) and Python bindings.
+
 ### Changed
 
 - **Breaking: codes a font draws but gives no character have a reason of their own.** A Type 3
