@@ -1,6 +1,7 @@
 //! BiDi (bidirectional) text reordering for RTL script support.
 
 use unicode_bidi::BidiInfo;
+use unicode_bidi_mirroring::get_mirrored;
 use unicode_normalization::UnicodeNormalization;
 
 /// Check if text contains RTL characters (Arabic, Hebrew, etc.)
@@ -23,7 +24,8 @@ pub fn contains_rtl(text: &str) -> bool {
 }
 
 /// Apply BiDi reordering to convert from visual to logical order,
-/// then normalize Arabic presentation forms via NFKC.
+/// mirroring the characters of right-to-left runs (UAX #9 L4), then
+/// normalize Arabic presentation forms via NFKC.
 pub fn reorder_bidi(text: &str) -> String {
     if !contains_rtl(text) {
         return text.to_string();
@@ -33,9 +35,19 @@ pub fn reorder_bidi(text: &str) -> String {
     let mut result = String::new();
 
     for para in &bidi_info.paragraphs {
-        let line = para.range.clone();
-        let reordered = bidi_info.reorder_line(para, line);
-        result.push_str(&reordered);
+        let (levels, runs) = bidi_info.visual_runs(para, para.range.clone());
+        for run in runs {
+            if levels[run.start].is_rtl() {
+                result.extend(
+                    text[run]
+                        .chars()
+                        .rev()
+                        .map(|c| get_mirrored(c).unwrap_or(c)),
+                );
+            } else {
+                result.push_str(&text[run]);
+            }
+        }
     }
 
     // Normalize Arabic presentation forms (U+FB50-U+FEFF) to base characters

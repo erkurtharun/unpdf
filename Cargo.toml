@@ -79,6 +79,7 @@ hayro-jbig2 = { version = "0.3", default-features = false, features = ["std"] }
 # Text processing
 regex = "1.11"
 unicode-bidi = "0.3"
+unicode-bidi-mirroring = "0.4"
 unicode-normalization = "0.1"
 # Metadata and outline strings written in a legacy CJK code page without a byte-order
 # mark (CP949, Shift_JIS, GBK, Big5) — detection and decoding.

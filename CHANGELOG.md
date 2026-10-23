@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Brackets in right-to-left text face the right way.** A right-to-left run is drawn with each
+  mirrored character as its mirror image (UAX #9 rule L4), so a `(` written in Arabic or Hebrew
+  text is painted as `)`. Reordering such a line back to logical order reversed the run but kept
+  the painted characters, and `(12)` came out as `)12(`. Each character of a reversed run is
+  mapped to its `Bidi_Mirroring_Glyph`.
+
 ## 0.48.0 — 2026-10-20
 
 ### Added
