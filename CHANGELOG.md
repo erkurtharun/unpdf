@@ -64,6 +64,10 @@
   single letter (`3.B`) still does not, so a wrapped line of prose stays in its paragraph.
   A number against a word at the start of a line that continues a sentence wrapped at the
   column edge stays in that sentence, as a dash there does. (#15, @erkurtharun)
+- **A glyph drawn into a gap a run leaves for it reads where it is drawn.** A producer whose font
+  lacks a glyph (LibreOffice for U+1D11E in Liberation Serif) leaves its advance blank in a TJ
+  array and draws it in another font afterwards; the glyph read after the whole run. A run is split
+  at a blank that a run drawn later on its baseline fills.
 
 ## 0.48.0 — 2026-10-20
 
