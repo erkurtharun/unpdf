@@ -62,6 +62,8 @@
   is not lowercase (uppercase, or a caseless script such as Hangul) and runs on for at least
   one more letter; a number followed by a digit (`1.5cm`), a lowercase letter (`2.x`) or a
   single letter (`3.B`) still does not, so a wrapped line of prose stays in its paragraph.
+  A number against a word at the start of a line that continues a sentence wrapped at the
+  column edge stays in that sentence, as a dash there does. (#15, @erkurtharun)
 
 ## 0.48.0 — 2026-10-20
 

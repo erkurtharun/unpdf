@@ -865,22 +865,35 @@ fn opens_a_list_item(text: &str) -> bool {
     text.chars().next().is_some_and(is_list_glyph) && !opens_with_signed_number(text)
 }
 
-/// Whether `curr`, which opens with a dash, continues the sentence `prev` was broken in
-/// rather than opening a list item.
+/// Whether `curr`, which opens with what could be a list marker, continues the sentence
+/// `prev` was broken in rather than opening a list item.
 ///
 /// A dash is a character as well as a bullet: `51 – 99 staff` broken after `51` puts the en
-/// dash at the start of the next line. Where `prev` runs to the column's edge (`prev_wraps`)
-/// the typesetter broke it there, and where it ends without closing a sentence or clause the
-/// sentence goes on — a list item would start after the sentence that introduces it. Only a
-/// dash is ambiguous; a bullet glyph is never running text.
+/// dash at the start of the next line. A number set against a word with no gap (`3.Results`)
+/// is a list marker or a reference in running text (`see Chapter` / `3.Results`). Where `prev`
+/// runs to the column's edge (`prev_wraps`) the typesetter broke it there, and where it ends
+/// without closing a sentence or clause the sentence goes on — a list item would start after
+/// the sentence that introduces it. A bullet glyph is never running text, and a number with a
+/// space after it is a marker as it always was.
 fn continues_after_a_wrap(prev: &str, curr: &str, prev_wraps: bool) -> bool {
-    let opens_with_dash = curr
-        .trim_start()
-        .starts_with(['-', '\u{2012}', '\u{2013}', '\u{2014}']);
+    let curr = curr.trim_start();
+    let opens_with_dash = curr.starts_with(['-', '\u{2012}', '\u{2013}', '\u{2014}']);
     let closes = prev
         .trim_end()
         .ends_with(['.', ':', ';', '!', '?', '。', '：']);
-    prev_wraps && opens_with_dash && !closes
+    prev_wraps && (opens_with_dash || opens_with_number_against_a_word(curr)) && !closes
+}
+
+/// Whether `text` opens with a list number set against its first word, no gap between them
+/// (`1.First`, `12)Twelfth`).
+fn opens_with_number_against_a_word(text: &str) -> bool {
+    let digits = text.chars().take_while(char::is_ascii_digit).count();
+    (1..=3).contains(&digits)
+        && text[digits..].starts_with(['.', ')'])
+        && text[digits + 1..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphabetic)
 }
 
 /// Whether `text` opens with a number carrying a minus sign: a dash printed against a digit
@@ -3870,6 +3883,31 @@ mod tests {
         assert!(!continues_after_a_wrap(
             "and those with",
             "\u{2022} small firms",
+            true
+        ));
+    }
+
+    #[test]
+    fn a_number_against_a_word_continues_a_wrapped_sentence_and_opens_an_item_otherwise() {
+        assert!(continues_after_a_wrap(
+            "as set out in Chapter",
+            "3.Results show",
+            true
+        ));
+        assert!(!continues_after_a_wrap(
+            "The steps are:",
+            "1.First step",
+            true
+        ));
+        assert!(!continues_after_a_wrap(
+            "as set out in Chapter",
+            "3.Results",
+            false
+        ));
+        // A number with a space after it opens an item, as before.
+        assert!(!continues_after_a_wrap(
+            "as set out in Chapter",
+            "3. Results",
             true
         ));
     }
