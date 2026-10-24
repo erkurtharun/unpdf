@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A line shown a word at a time with em-wide spaces stays one paragraph.** A column gutter needs
+  three lines of text on each side, but the words of one baseline that stood an em or more apart
+  counted as lines of their own. A sentence in a CJK font whose space takes `/DW` 1000, shown one
+  word per `Tj`, was cut at a space into two columns and read as two paragraphs. The lines beside
+  a gutter are now counted by baseline.
+
 ## 0.48.0 — 2026-10-20
 
 ### Added
