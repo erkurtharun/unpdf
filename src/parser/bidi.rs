@@ -25,7 +25,7 @@ pub fn contains_rtl(text: &str) -> bool {
 
 /// Apply BiDi reordering to convert from visual to logical order,
 /// mirroring the characters of right-to-left runs (UAX #9 L4), then
-/// normalize Arabic presentation forms via NFKC.
+/// unfold the right-to-left presentation forms it holds to their base letters.
 pub fn reorder_bidi(text: &str) -> String {
     if !contains_rtl(text) {
         return text.to_string();
@@ -50,6 +50,29 @@ pub fn reorder_bidi(text: &str) -> String {
         }
     }
 
-    // Normalize Arabic presentation forms (U+FB50-U+FEFF) to base characters
-    result.nfkc().collect()
+    unfold_presentation_forms(&result)
+}
+
+/// Whether `c` is a presentation form of a right-to-left script: Hebrew (U+FB1D–U+FB4F) or
+/// Arabic, forms A (U+FB50–U+FDFF) and B (U+FE70–U+FEFF). A font draws a shaped letter as one
+/// and the text stands for its base letters.
+fn is_rtl_presentation_form(c: char) -> bool {
+    matches!(c, '\u{FB1D}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}')
+}
+
+/// `text` with each right-to-left presentation form replaced by its compatibility
+/// decomposition (NFKC), and every other character as it is. Folding the whole line would
+/// also turn `²` into `2`, `ﬁ` into `fi` and full-width letters into ASCII in the parts of the
+/// line that are not Arabic or Hebrew.
+fn unfold_presentation_forms(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut buf = [0u8; 4];
+    for c in text.chars() {
+        if is_rtl_presentation_form(c) {
+            out.extend(c.encode_utf8(&mut buf).nfkc());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }

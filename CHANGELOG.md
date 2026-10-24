@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Only Arabic and Hebrew presentation forms are unfolded in right-to-left lines.** A line holding
+  any right-to-left character was normalized whole (NFKC), so the other text on it changed too:
+  `²` became `2`, `ﬁ` became `fi`, full-width letters became ASCII. Only the presentation forms
+  (U+FB1D–U+FDFF, U+FE70–U+FEFF), which a font draws for shaped letters, are unfolded to their
+  base letters now.
+
 ## 0.49.0 — 2026-10-24
 
 ### Added
