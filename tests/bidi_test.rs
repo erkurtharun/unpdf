@@ -36,6 +36,8 @@ fn test_reorder_bidi_mirrors_brackets_in_rtl_run() {
     assert_eq!(bidi::reorder_bidi("ج (ب) ا"), "ا (ب) ج");
 }
 
+/// A guard, not a regression test: it passes with or without the mirroring -- brackets in a
+/// left-to-right run must stay as drawn.
 #[test]
 fn test_reorder_bidi_keeps_brackets_in_ltr_run() {
     assert_eq!(bidi::reorder_bidi("abc (d) ج"), "abc (d) ج");
