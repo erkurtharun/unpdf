@@ -767,6 +767,9 @@ fn find_best_vertical_gap(
         let center = (gap_left + gap_right) / 2.0;
         let (left, right): (Vec<Block>, Vec<Block>) =
             blocks.iter().partition(|b| b.x + b.width / 2.0 < center);
+        // Each side is already one side of the channel, so its runs on one baseline are one
+        // line however far apart. `column_band` counts lines of a region not yet split, where
+        // joining without a limit would merge the columns, so it keeps its half-em join.
         if lines_of(&left, f32::INFINITY).len() < GUTTER_MIN_SIDE_BLOCKS
             || lines_of(&right, f32::INFINITY).len() < GUTTER_MIN_SIDE_BLOCKS
         {

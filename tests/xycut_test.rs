@@ -631,7 +631,8 @@ fn a_line_drawn_word_by_word_with_em_wide_spaces_is_not_two_columns() {
     let mut x = 72.0;
     for glyphs in [1.0, 3.0, 3.0, 3.0, 1.0, 3.0, 2.0, 6.0] {
         blocks.push(make_block(x, 709.0, glyphs * 10.0, 10.0));
-        x += glyphs * 10.0 + 10.0;
+        // Spaces a little wider than an em: past the old two-gutter join limit, not on it.
+        x += glyphs * 10.0 + 12.0;
     }
     let groups = xycut_segment(&blocks, &BODY_10PT);
     assert_eq!(groups.len(), 1, "{groups:?}");
