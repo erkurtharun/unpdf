@@ -120,16 +120,17 @@ pub struct Page {
 
     /// Characters other than whitespace drawn in a rendering mode that paints nothing (3, or
     /// 7, which only adds to the clipping path, when nothing is painted inside that clip): the
-    /// OCR layer of a searchable scan, or text meant to be found and not seen. Their text is extracted although nothing shows it,
-    /// unless the OCR layer was dropped (`ocr_text_suppressed`), which leaves this count as
-    /// it was. Against `painted_text_chars` it weighs an invisible layer against the text
+    /// OCR layer of a searchable scan, or text meant to be found and not seen. Their text is
+    /// extracted although nothing shows it, unless the OCR layer was dropped
+    /// (`ocr_text_suppressed`), which leaves this count as it was. Against `painted_text_chars` it weighs an invisible layer against the text
     /// that shows. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub invisible_text_chars: u32,
 
     /// Characters other than whitespace drawn in a rendering mode that paints them (or in
-    /// mode 7 with something painted inside its clip), outside what the clipping path hides. Painted is not visible: white text on white, a zero
-    /// alpha, or text under an opaque image is painted. Omitted from JSON when 0.
+    /// mode 7 with something painted inside its clip), outside what the clipping path hides.
+    /// Painted is not visible: white text on white, a zero alpha, or text under an opaque
+    /// image is painted. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub painted_text_chars: u32,
 
@@ -150,6 +151,10 @@ pub struct Page {
     /// `clipped_text_runs`. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub blank_text_runs: u32,
+    /// Codes a composite font's `ToUnicode` and own data give no character although their
+    /// glyph advances, in runs that give other text. Omitted from JSON when 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub undecoded_text_codes: u32,
 
     /// Ruling-line grids drawn on the page. More grids than `ruled_tables` means a drawn
     /// grid produced no table. Omitted from JSON when 0.
@@ -212,6 +217,7 @@ impl Page {
             margin_text_chars: 0,
             clipped_text_runs: 0,
             blank_text_runs: 0,
+            undecoded_text_codes: 0,
             ruled_grids: 0,
             ruled_tables: 0,
             reading_regions: 0,

@@ -645,6 +645,9 @@ pub struct PageFacts {
     pub blank_text_runs: u32,
     /// Path-filling operators: `f`, `F`, `f*`, `B`, `B*`, `b` and `b*`.
     pub fill_op_count: u32,
+    /// Codes a composite font's `ToUnicode` and own data give no character although their
+    /// glyph advances, in runs that give other text.
+    pub undecoded_text_codes: u32,
     /// Ruling-line grids drawn on the page.
     pub ruled_grids: u32,
     /// Tables built from those grids.
@@ -1393,6 +1396,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut margin_text_chars = 0usize;
         let mut fill_op_count = 0u32;
         let mut painted = PaintTally::default();
+        let mut undecoded_text_codes = 0u32;
         let mut suppressed_runs = 0usize;
         let mut unreadable_fonts: Vec<UnreadableFont> = Vec::new();
         let mut signals = PageTextLayerSignals::default();
@@ -1574,6 +1578,7 @@ impl<'a> LayoutAnalyzer<'a> {
                                         &mut suppressed_runs,
                                         &mut unreadable_fonts,
                                     );
+                                    undecoded_text_codes += decoded.undecoded_codes;
                                     if let Some(room) = room.take() {
                                         maybe_insert_space_tj(&mut text, room - letter_room);
                                     }
@@ -1733,8 +1738,8 @@ impl<'a> LayoutAnalyzer<'a> {
                             span.is_italic |= text_state.font_italic;
                             // An invisible text layer's font is a stand-in, not the page's type:
                             // OCR engines set theirs fixed-pitch (Tesseract's GlyphLessFont).
-                            span.is_monospace = text_state.font_fixed_pitch
-                                && text_state.params.render_mode != 3;
+                            span.is_monospace =
+                                text_state.font_fixed_pitch && text_state.params.render_mode != 3;
                             if let Some(width) = measured_width {
                                 span.width = width;
                                 span.width_measured = true;
@@ -1816,6 +1821,7 @@ impl<'a> LayoutAnalyzer<'a> {
         facts.clipped_text_runs = clipped_text_runs;
         facts.blank_text_runs = blank_text_runs;
         facts.fill_op_count = fill_op_count;
+        facts.undecoded_text_codes = undecoded_text_codes;
         facts.ruled_grids = lattice_grids.len() as u32;
         facts.ruled_tables = 0;
         self.page_facts.set(facts);

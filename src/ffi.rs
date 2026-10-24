@@ -1084,6 +1084,7 @@ unparser_shared::export_string_getter!(
     ///
     /// Returns `{"page":N,"rotation":N,"text_op_count":N,"image_op_count":N,"form_op_count":N,
     /// "fill_op_count":N,"ocr_text_suppressed":bool,"suppressed_text_runs":N,"unreadable_fonts":[...],
+    /// "undecoded_text_codes":N,
     /// "undecodable_content_streams":N,"image_coverage":F,"rotated_text_runs":N,
     /// "invisible_text_chars":N,"painted_text_chars":N,"margin_text_chars":N,"clipped_text_runs":N,
     /// "blank_text_runs":N,"ruled_grids":N,"ruled_tables":N,"reading_regions":N,"column_count":N,
@@ -1103,6 +1104,8 @@ unparser_shared::export_string_getter!(
     ///   `"unmapped_codes"` (a font that draws glyphs for codes it gives no character,
     ///   its text lost); more values may be added, so treat an unknown one as a generic
     ///   "unreadable". The `runs` of all entries sum to `suppressed_text_runs`.
+    /// - `undecoded_text_codes`: codes a composite font's `ToUnicode` and own data give no
+    ///   character although their glyph advances, in runs that give other text.
     /// - `text_op_count`: number of text-showing operators (`Tj`/`TJ`/`'`/`"`),
     ///   including those inside the Form XObjects the page paints.
     /// - `image_op_count`: number of image paints (`Do` of anything but a Form XObject,
@@ -1126,8 +1129,9 @@ unparser_shared::export_string_getter!(
     ///   order treats them as horizontal, so their order may be wrong.
     /// - `invisible_text_chars` / `painted_text_chars`: characters other than whitespace
     ///   drawn in a rendering mode that paints nothing (3, or 7 with nothing painted inside
-    ///   its clip), as in a searchable scan, and in one that paints them. Invisible text is extracted although nothing shows it,
-    ///   unless `ocr_text_suppressed` dropped it, which leaves the count as it was.
+    ///   its clip), as in a searchable scan, and in one that paints them. Invisible text is
+    ///   extracted although nothing shows it, unless `ocr_text_suppressed` dropped it, which
+    ///   leaves the count as it was.
     /// - `margin_text_chars`: the painted characters whose baseline is in the top or bottom
     ///   tenth of the page as shown (its `/Rotate` applied), where running heads and page
     ///   numbers sit.
@@ -1175,6 +1179,7 @@ unparser_shared::export_string_getter!(
             "ocr_text_suppressed": page.ocr_text_suppressed,
             "suppressed_text_runs": page.suppressed_text_runs,
             "unreadable_fonts": page.unreadable_fonts,
+            "undecoded_text_codes": page.undecoded_text_codes,
             "undecodable_content_streams": page.undecodable_content_streams,
             "image_coverage": page.image_coverage,
             "rotated_text_runs": page.rotated_text_runs,

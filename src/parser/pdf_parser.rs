@@ -266,6 +266,7 @@ pub(crate) fn parse_single_page(
         page.clipped_text_runs = facts.clipped_text_runs;
         page.blank_text_runs = facts.blank_text_runs;
         page.fill_op_count = facts.fill_op_count;
+        page.undecoded_text_codes = facts.undecoded_text_codes;
         page.ruled_grids = facts.ruled_grids;
         page.ruled_tables = facts.ruled_tables;
         page.reading_regions = facts.reading_regions;
