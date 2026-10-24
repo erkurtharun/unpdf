@@ -892,11 +892,14 @@ const ROW_Y_TOLERANCE: f32 = 6.0;
 
 /// Render a table row detected with low confidence as plain paragraph text.
 fn low_confidence_row_text(row: &super::table_detector::TableRowData) -> String {
-    row.spans
+    let text = row
+        .spans
         .iter()
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
-        .join("  ")
+        .join("  ");
+    // Visual order, as a line's runs: right-to-left text is reordered to logical.
+    super::bidi::reorder_bidi(&text)
 }
 
 /// Each span's size and the characters it counts for in the body-size histogram.

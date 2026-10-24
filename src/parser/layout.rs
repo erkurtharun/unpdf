@@ -294,10 +294,6 @@ impl TextLine {
             return String::new();
         }
 
-        if self.spans.len() == 1 {
-            return self.spans[0].text.clone();
-        }
-
         let mut result = String::new();
 
         for (i, span) in self.spans.iter().enumerate() {
@@ -313,7 +309,8 @@ impl TextLine {
             result.push_str(&span.text);
         }
 
-        // Apply BiDi reordering for RTL scripts (Arabic, Hebrew, etc.)
+        // Runs are joined in the order they stand on the page, which for right-to-left
+        // text (Arabic, Hebrew) is visual order: reorder to logical, a one-run line too.
         if super::bidi::contains_rtl(&result) {
             result = super::bidi::reorder_bidi(&result);
         }

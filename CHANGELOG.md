@@ -9,6 +9,10 @@
   `²` became `2`, `ﬁ` became `fi`, full-width letters became ASCII. Only the presentation forms
   (U+FB1D–U+FDFF, U+FE70–U+FEFF), which a font draws for shaped letters, are unfolded to their
   base letters now.
+- **Right-to-left text reads in logical order wherever runs are joined.** A line of one run, a
+  table cell and a table row written as text joined their runs in the order they stand on the
+  page -- visual order, so Arabic and Hebrew came out reversed there while multi-run lines were
+  reordered. All of them now go through the same reordering.
 
 ## 0.49.0 — 2026-10-24
 

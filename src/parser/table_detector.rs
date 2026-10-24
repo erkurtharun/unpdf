@@ -802,7 +802,9 @@ impl TableDetector {
             let cells: Vec<TableCell> = cell_contents
                 .into_iter()
                 .map(|contents| {
-                    let text = contents.join(" ");
+                    // The cell's runs stand in visual order, as a line's do: right-to-left text
+                    // is reordered to logical order the way `TextLine::text` reorders it.
+                    let text = super::bidi::reorder_bidi(&contents.join(" "));
                     TableCell::text(super::layout::trim_leaders(&text).to_string())
                 })
                 .collect();

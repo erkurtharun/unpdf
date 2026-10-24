@@ -58,3 +58,19 @@ fn test_reorder_bidi_unfolds_only_rtl_presentation_forms() {
         "{out:?}"
     );
 }
+
+/// A line that is one run of right-to-left text is reordered as a line of several is: the run's
+/// characters stand in visual order.
+#[test]
+fn a_one_run_rtl_line_reads_in_logical_order() {
+    let span = unpdf::parser::TextSpan::new(
+        "\u{05D0}\u{05D1}".to_string(),
+        72.0,
+        700.0,
+        12.0,
+        "F1".into(),
+    );
+    let line = unpdf::parser::TextLine::from_spans(vec![span]);
+    // Visual "אב" is logical "בא".
+    assert_eq!(line.text(), "\u{05D1}\u{05D0}");
+}
