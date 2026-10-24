@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- **Faster text decoding.** The decoder's cache of `ToUnicode` maps handed out a copy of the map
+  on every text-showing operator: one `String` per mapped code, for every `Tj` and `TJ`. The maps
+  are now shared. opendataloader-bench converts in about a third of the time measured against
+  the same build of 0.48.0 in the same session.
+
 ### Fixed
 
 - **Only Arabic and Hebrew presentation forms are unfolded in right-to-left lines.** A line holding

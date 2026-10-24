@@ -2698,7 +2698,7 @@ impl<'d> FontRef<'d> {
 }
 
 struct RawFontResolver {
-    cmap_cache: RwLock<HashMap<FontKey, Option<ToUnicodeMap>>>,
+    cmap_cache: RwLock<HashMap<FontKey, Option<Arc<ToUnicodeMap>>>>,
     /// The `cmap` table of a composite font's embedded TrueType program, by the Type 0
     /// font: its CIDFont may be written inline, with no identity of its own.
     embedded_cmap_cache: RwLock<HashMap<FontKey, Option<Arc<ToUnicodeMap>>>>,
@@ -3137,7 +3137,13 @@ impl RawFontResolver {
     }
 
     /// Get or parse the ToUnicode CMap for a font.
-    fn get_to_unicode_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<ToUnicodeMap> {
+    /// Shared, not cloned: a map holds a `String` per code, and this is read for every
+    /// text-showing operator.
+    fn get_to_unicode_map(
+        &self,
+        doc: &RawDocument,
+        font: &FontRef<'_>,
+    ) -> Option<Arc<ToUnicodeMap>> {
         {
             let cache = self.cmap_cache.read().unwrap();
             if let Some(cached) = cache.get(&font.key) {
@@ -3145,7 +3151,7 @@ impl RawFontResolver {
             }
         }
 
-        let result = self.parse_font_to_unicode(doc, font);
+        let result = self.parse_font_to_unicode(doc, font).map(Arc::new);
         self.cmap_cache
             .write()
             .unwrap()
