@@ -57,14 +57,24 @@ pub(crate) fn build_encoding_map(
         }
     }
 
-    // Apply differences overrides
+    apply_differences(&mut map, differences);
+    map
+}
+
+/// Lays `/Differences` over an encoding map.
+///
+/// A name that gives no text (`g12`, a producer's own names such as dvips' `/BT` at code
+/// 65) leaves the code as the base encoding has it. ISO 32000-1 §9.6.6.1 says the code is
+/// that glyph, but nothing names the glyph's character, and readers fall back to the code:
+/// pdf.js reads an unmapped code as the character of its value (`Font._charToGlyph`). For
+/// TeX's bitmap fonts, which name their glyphs this way and carry no `ToUnicode`, that
+/// fallback is the text — measured on an olmOCR-Bench page that came out empty without it.
+pub(crate) fn apply_differences(map: &mut EncodingMap, differences: &[(u8, String)]) {
     for (code, glyph_name) in differences {
         if let Some(text) = glyph_name_to_text(glyph_name) {
             map.insert(*code, text);
         }
     }
-
-    map
 }
 
 /// Decode a byte sequence using an encoding map.

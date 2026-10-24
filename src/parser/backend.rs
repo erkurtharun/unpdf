@@ -12,7 +12,7 @@ use crate::model::{FieldType, FieldValue, FormField};
 use super::cmap::{CMap, CMapDef, Parent, MAX_USE_CMAP_DEPTH};
 use super::core14::StandardFont;
 use super::encoding::{
-    build_encoding_map, decode_with_encoding_map, glyph_name_to_text, single_char, BaseEncoding,
+    apply_differences, build_encoding_map, decode_with_encoding_map, single_char, BaseEncoding,
     EncodingMap,
 };
 use super::font::{
@@ -3451,11 +3451,7 @@ impl RawFontResolver {
                         .map(|standard| standard.builtin_encoding().clone())
                 });
             if let Some(mut map) = own {
-                for (code, name) in differences {
-                    if let Some(text) = glyph_name_to_text(name) {
-                        map.insert(*code, text);
-                    }
-                }
+                apply_differences(&mut map, differences);
                 return map;
             }
         }
