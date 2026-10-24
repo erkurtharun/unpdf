@@ -258,8 +258,8 @@ public sealed class PageStats
     public uint PaintedTextChars { get; init; }
 
     /// <summary>
-    /// Painted characters whose baseline is in the top or bottom tenth of the page box,
-    /// where running heads and page numbers sit.
+    /// Painted characters whose baseline is in the top or bottom tenth of the page as shown
+    /// (its /Rotate applied), where running heads and page numbers sit.
     /// </summary>
     [JsonPropertyName("margin_text_chars")]
     public uint MarginTextChars { get; init; }

@@ -128,13 +128,15 @@ pub struct Page {
     pub invisible_text_chars: u32,
 
     /// Characters other than whitespace drawn in a rendering mode that paints them, outside
-    /// what the clipping path hides. Omitted from JSON when 0.
+    /// what the clipping path hides. Painted is not visible: white text on white, a zero
+    /// alpha, or text under an opaque image is painted. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub painted_text_chars: u32,
 
     /// Those of `painted_text_chars` whose baseline is in the top or bottom tenth of the
-    /// page box, where running heads and page numbers sit: a scan whose only text is its
-    /// folio has all its painted text there. Omitted from JSON when 0.
+    /// page as shown (its `/Rotate` applied), where running heads and page numbers sit: a
+    /// scan whose only text is its folio has all its painted text there. A geometric count,
+    /// not the tagged-PDF pagination artifacts. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub margin_text_chars: u32,
 
@@ -144,7 +146,8 @@ pub struct Page {
     pub clipped_text_runs: u32,
 
     /// Text runs whose text is only whitespace: they space the words around them and show
-    /// nothing of their own. Omitted from JSON when 0.
+    /// nothing of their own. A blank run the clip hides is in neither this count nor
+    /// `clipped_text_runs`. Omitted from JSON when 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub blank_text_runs: u32,
 

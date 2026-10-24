@@ -183,6 +183,19 @@ fn painted_text_in_the_top_and_bottom_tenth_is_margin_text() {
 }
 
 #[test]
+fn on_a_page_turned_a_quarter_the_margins_are_the_box_s_left_and_right_edges() {
+    // Shown turned 90 degrees, the box's left edge is the top of the page and its right edge
+    // the bottom: a folio set at x 560 sits at the foot, and text low in the box at x 300 is in
+    // the middle of what a reader sees.
+    let content = b"BT /F1 10 Tf 560 400 Td (12) Tj ET \
+          BT /F1 12 Tf 300 40 Td (Body) Tj ET";
+    let turned = only_page(&page_pdf("", &format!("{A4}/Rotate 90"), content));
+    assert_eq!(turned.margin_text_chars, 2);
+    let upright = only_page(&page_pdf("", A4, content));
+    assert_eq!(upright.margin_text_chars, 4);
+}
+
+#[test]
 fn runs_of_only_whitespace_are_blank() {
     let page = only_page(&page_pdf(
         "",

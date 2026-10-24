@@ -328,7 +328,8 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * that paints them. Invisible text is extracted although nothing shows it,
  * unless ocr_text_suppressed dropped it, which leaves the count as it was.
  * margin_text_chars counts the painted ones whose baseline is in the top or
- * bottom tenth of the page box, where running heads and page numbers sit.
+ * bottom tenth of the page as shown (its /Rotate applied), where running
+ * heads and page numbers sit.
  * clipped_text_runs counts text runs the clipping path or the page box hides
  * entirely, left out; blank_text_runs, text runs that are only whitespace.
  * ruled_grids / ruled_tables: ruling-line grids drawn, tables built from them.

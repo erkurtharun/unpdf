@@ -1129,7 +1129,8 @@ unparser_shared::export_string_getter!(
     ///   in one that paints them. Invisible text is extracted although nothing shows it,
     ///   unless `ocr_text_suppressed` dropped it, which leaves the count as it was.
     /// - `margin_text_chars`: the painted characters whose baseline is in the top or bottom
-    ///   tenth of the page box, where running heads and page numbers sit.
+    ///   tenth of the page as shown (its `/Rotate` applied), where running heads and page
+    ///   numbers sit.
     /// - `clipped_text_runs`: text runs the clipping path or the page box hides entirely.
     ///   Their text is left out.
     /// - `blank_text_runs`: text runs whose text is only whitespace.

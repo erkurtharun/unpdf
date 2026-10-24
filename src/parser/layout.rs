@@ -1331,7 +1331,20 @@ impl<'a> LayoutAnalyzer<'a> {
         // seen, so they are not page content.
         let visible = self.backend.crop_box(page_id);
         let mut clip = ClipTracker::new(visible);
-        let margin_band = 0.1 * visible.height();
+        // The top and bottom tenth of the page as it is shown: a page turned a quarter
+        // (`/Rotate` 90 or 270) shows its box's left and right edges at the top and bottom.
+        // A geometric stand-in -- the format's own signal for running heads and folios is a
+        // `/Pagination` artifact (ISO 32000-1 §14.8.2.2), which tagged files alone carry.
+        let quarter_turned = self.backend.page_rotation(page_id) % 180 == 90;
+        let in_margin = |(x, y): (f32, f32)| {
+            if quarter_turned {
+                let band = 0.1 * visible.width();
+                x <= visible.llx + band || x >= visible.urx - band
+            } else {
+                let band = 0.1 * visible.height();
+                y <= visible.lly + band || y >= visible.ury - band
+            }
+        };
         // Where each image paint shows on the page, in page space.
         let mut image_rects: Vec<Bounds> = Vec::new();
         let mut rotated_text_runs = 0u32;
@@ -1638,9 +1651,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             if !reads_left_to_right(&text_matrix.tm, &ctm) {
                                 rotated_text_runs += 1;
                             }
-                            if !matches!(text_state.params.render_mode, 3 | 7)
-                                && (y <= visible.lly + margin_band
-                                    || y >= visible.ury - margin_band)
+                            if !matches!(text_state.params.render_mode, 3 | 7) && in_margin((x, y))
                             {
                                 margin_text_chars +=
                                     text.chars().filter(|c| !c.is_whitespace()).count();
