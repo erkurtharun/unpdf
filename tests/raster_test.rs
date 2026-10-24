@@ -1575,6 +1575,48 @@ fn invisible_text_paints_nothing_and_is_no_gap() {
     assert!(page.gaps.is_empty());
 }
 
+/// Text in a clipping mode becomes the clip at `ET` (ISO 32000-1 §9.3.6): what is painted
+/// after it shows through the glyphs only, until the state is restored. Mode 7 paints
+/// nothing itself; mode 4 fills the glyphs and clips too.
+#[test]
+fn text_in_a_clipping_mode_clips_what_is_painted_after_it() {
+    let square = |content: &[u8]| {
+        font_page(
+            "<</Type/Font/Subtype/TrueType/BaseFont/UnpdfSquare/FirstChar 65/LastChar 65              /Widths[1000]/Encoding/WinAnsiEncoding/FontDescriptor 6 0 R>>",
+            vec![
+                b"<</Type/FontDescriptor/FontName/UnpdfSquare/Flags 32/FontBBox[0 0 1000 800]                   /ItalicAngle 0/Ascent 800/Descent -200/CapHeight 800/StemV 80/FontFile2 7 0 R>>"
+                    .to_vec(),
+                font_file("", SQUARE_TTF),
+            ],
+            content,
+        )
+    };
+    let inside = (150, 842 - 140);
+    let outside = (300, 842 - 400);
+
+    let clipped = render(
+        &square(b"q BT 7 Tr /F1 100 Tf 100 100 Td (A) Tj ET 1 0 0 rg 0 0 595 842 re f Q"),
+        &PT,
+    );
+    assert!(near(px(&clipped, inside.0, inside.1), RED));
+    assert!(near(px(&clipped, outside.0, outside.1), WHITE));
+
+    // The clip ends with the state that holds it.
+    let restored = render(
+        &square(b"q BT 7 Tr /F1 100 Tf 100 100 Td (A) Tj ET Q 1 0 0 rg 0 0 595 842 re f"),
+        &PT,
+    );
+    assert!(near(px(&restored, outside.0, outside.1), RED));
+
+    // Mode 4 fills the glyph and clips: a blue fill after it lands on the glyph only.
+    let filled = render(
+        &square(b"q 1 0 0 rg BT 4 Tr /F1 100 Tf 100 100 Td (A) Tj ET 0 0 1 rg 0 0 50 842 re f Q"),
+        &PT,
+    );
+    assert!(near(px(&filled, inside.0, inside.1), RED));
+    assert!(near(px(&filled, 20, 842 - 140), WHITE));
+}
+
 /// The crop box is what a viewer shows and the default region; the media box is the whole
 /// sheet.
 #[test]

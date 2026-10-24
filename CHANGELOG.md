@@ -29,6 +29,11 @@
   3) is drawn in the OCR engine's stand-in font, which Tesseract declares fixed-pitch, so whole
   scanned pages were written as fenced code blocks. Fixed-pitch text counts as preformatted only when
   it is painted.
+- **Page rendering clips to text drawn in a clipping mode.** In rendering modes 4 to 7 the glyphs
+  are added to the clipping path at the end of the text object (ISO 32000-1 §9.3.6), and what is
+  painted afterwards shows only through them -- the way an image is set inside large letters. The
+  renderer ignored this and painted the whole image or fill. Against MuPDF on such pages, the
+  share of pixels that differ fell from 87.6% to 1.3% (glyph edges of the stand-in face).
 - **A code a composite font's `ToUnicode` leaves out no longer reads as another code.** A
   `ToUnicode` that declares two-byte codes but maps none above `0xFF` cut the codes to one
   byte, so `<0200>` under `Identity-H` read as the character of `0x02`. When unpdf can split

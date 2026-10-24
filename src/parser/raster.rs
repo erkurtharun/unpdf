@@ -385,6 +385,9 @@ struct Painter<'a> {
     path: PathBuilder,
     /// A clip set by `W`/`W*`, applied when the path is next painted or ended.
     pending_clip: Option<FillRule>,
+    /// The outlines, in device space, of the glyphs the open text object shows in a clipping
+    /// mode (4 to 7): they become the clip at `ET` (ISO 32000-1 §9.3.6, Table 106).
+    text_clip: Option<PathBuilder>,
     /// The text matrix and text line matrix, inside `BT … ET`.
     text_matrix: TextMatrix,
     /// Fonts loaded so far, by the resource that names them; `None` when unpaintable.
@@ -467,6 +470,7 @@ impl<'a> Painter<'a> {
             stack: Vec::new(),
             path: PathBuilder::new(),
             pending_clip: None,
+            text_clip: None,
             text_matrix: TextMatrix::default(),
             fonts: HashMap::new(),
             type3: HashMap::new(),
@@ -747,6 +751,12 @@ impl Painter<'_> {
                     self.state.text.font = Some((op.form, name.clone()));
                 }
             }
+            "BT" => self.text_clip = None,
+            "ET" => {
+                if let Some(path) = self.text_clip.take().and_then(PathBuilder::finish) {
+                    self.clip_in(Some(&path), FillRule::Winding, Transform::identity());
+                }
+            }
             "Tj" | "'" => self.show(op, op.operands.get(..1).unwrap_or(&[])),
             "TJ" => {
                 if let Some(PdfValue::Array(items)) = op.operands.first() {
@@ -828,7 +838,8 @@ impl Painter<'_> {
                 };
                 let w0 = measured.width;
                 match gid {
-                    Some(gid) if !invisible => {
+                    // Mode 7 paints nothing but clips, so its outlines are still taken.
+                    Some(gid) if text.render_mode != 3 => {
                         let mut glyph_space = font.glyph_to_text;
                         if font.stand_in {
                             // A stand-in face is drawn to the width the font gives the
@@ -1063,6 +1074,13 @@ impl Painter<'_> {
     /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both). `false` when
     /// part of it was not painted: its color is a pattern this does not paint.
     fn paint_glyph(&mut self, outline: &Path, transform: Transform, mode: i64) -> bool {
+        if (4..=7).contains(&mode) {
+            if let Some(device) = outline.clone().transform(transform) {
+                self.text_clip
+                    .get_or_insert_with(PathBuilder::new)
+                    .push_path(&device);
+            }
+        }
         let fill = matches!(mode, 0 | 2 | 4 | 6);
         let stroke = matches!(mode, 1 | 2 | 5 | 6);
         let mut painted = true;
@@ -1390,6 +1408,11 @@ impl Painter<'_> {
 
     /// Intersect the clip with `path` (no path: an empty clip).
     fn clip(&mut self, path: Option<&Path>, rule: FillRule) {
+        self.clip_in(path, rule, self.state.ctm);
+    }
+
+    /// [`Self::clip`] with `path` in the space `transform` maps to device pixels.
+    fn clip_in(&mut self, path: Option<&Path>, rule: FillRule, transform: Transform) {
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
         let Some(path) = path else {
             self.state.clip = Mask::new(w, h);
@@ -1397,10 +1420,10 @@ impl Painter<'_> {
             return;
         };
         match &mut self.state.clip {
-            Some(mask) => mask.intersect_path(path, rule, true, self.state.ctm),
+            Some(mask) => mask.intersect_path(path, rule, true, transform),
             None => {
                 if let Some(mut mask) = Mask::new(w, h) {
-                    mask.fill_path(path, rule, true, self.state.ctm);
+                    mask.fill_path(path, rule, true, transform);
                     self.state.clip = Some(mask);
                 }
             }
