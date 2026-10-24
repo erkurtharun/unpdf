@@ -2698,8 +2698,8 @@ struct RawFontResolver {
     /// The `cmap` table of a composite font's embedded TrueType program, by the Type 0
     /// font: its CIDFont may be written inline, with no identity of its own.
     embedded_cmap_cache: RwLock<HashMap<FontKey, Option<ToUnicodeMap>>>,
-    encoding_cache: RwLock<HashMap<FontKey, Option<EncodingMap>>>,
-    program_encoding_cache: RwLock<HashMap<FontKey, Option<EncodingMap>>>,
+    encoding_cache: RwLock<HashMap<FontKey, Option<Arc<EncodingMap>>>>,
+    program_encoding_cache: RwLock<HashMap<FontKey, Option<Arc<EncodingMap>>>>,
     style_cache: RwLock<HashMap<FontKey, DeclaredStyle>>,
     cid_system_info_cache: RwLock<HashMap<FontKey, Option<(String, String)>>>,
     /// A composite font's resolved `/Encoding`, shared by text decoding and widths.
@@ -3299,8 +3299,8 @@ impl RawFontResolver {
             data,
             selection: GlyphSelection::Simple {
                 chars: self.get_encoding_map(doc, font).map(|map| {
-                    map.into_iter()
-                        .filter_map(|(code, text)| Some((code, single_char(&text)?)))
+                    map.iter()
+                        .filter_map(|(&code, text)| Some((code, single_char(text)?)))
                         .collect()
                 }),
                 names,
@@ -3345,7 +3345,8 @@ impl RawFontResolver {
     }
 
     /// Get or parse the encoding map for a font.
-    fn get_encoding_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<EncodingMap> {
+    fn get_encoding_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<Arc<EncodingMap>> {
+        // Shared, not cloned: the decoder asks for the map on every text-showing operator.
         {
             let cache = self.encoding_cache.read().unwrap();
             if let Some(cached) = cache.get(&font.key) {
@@ -3353,7 +3354,7 @@ impl RawFontResolver {
             }
         }
 
-        let result = self.parse_encoding_dict(doc, font);
+        let result = self.parse_encoding_dict(doc, font).map(Arc::new);
         self.encoding_cache
             .write()
             .unwrap()
@@ -3367,7 +3368,7 @@ impl RawFontResolver {
     /// implicit base is the program's own encoding, not StandardEncoding). Read for a Type 1
     /// program (`/FontFile`) and a bare CFF one (`/FontFile3 /Type1C`); `None` for any
     /// other font.
-    fn program_encoding(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<EncodingMap> {
+    fn program_encoding(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<Arc<EncodingMap>> {
         if let Some(cached) = self.program_encoding_cache.read().unwrap().get(&font.key) {
             return cached.clone();
         }
@@ -3378,7 +3379,8 @@ impl RawFontResolver {
                 FontFormat::Type1 => super::type1::builtin_encoding_chars(&data),
                 FontFormat::Cff => super::cff::builtin_encoding_chars(&data),
                 _ => None,
-            });
+            })
+            .map(Arc::new);
         self.program_encoding_cache
             .write()
             .unwrap()
@@ -3441,10 +3443,13 @@ impl RawFontResolver {
             .and_then(|b| b.as_name())
             .and_then(BaseEncoding::from_name);
         if named.is_none() {
-            let own = self.program_encoding(doc, font).or_else(|| {
-                self.standard_font(doc, font)
-                    .map(|standard| standard.builtin_encoding().clone())
-            });
+            let own = self
+                .program_encoding(doc, font)
+                .map(|map| (*map).clone())
+                .or_else(|| {
+                    self.standard_font(doc, font)
+                        .map(|standard| standard.builtin_encoding().clone())
+                });
             if let Some(mut map) = own {
                 for (code, name) in differences {
                     if let Some(text) = glyph_name_to_text(name) {
