@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A run the clip hides is not reported as unreadable.** A text run whose font could not be
+  read was counted in `suppressed_text_runs` and `unreadable_fonts` even when the clipping path
+  or the page box hid it entirely, so a page could report a loss of text it never shows. Only
+  the runs the clip shows are counted now. (#21, @erkurtharun)
+
 ## 0.50.0 — 2026-10-24
 
 ### Changed
