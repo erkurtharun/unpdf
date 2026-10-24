@@ -32,16 +32,6 @@ fn flagged(name: &str) -> String {
     )
 }
 
-/// A non-standard font with no FixedPitch flag whose `/Widths` are all one advance.
-fn uniform(name: &str) -> String {
-    let widths = vec!["600"; 95].join(" ");
-    format!(
-        "/BaseFont/{name}/FirstChar 32/LastChar 126/Widths[{widths}]\
-         /FontDescriptor<</Type/FontDescriptor/FontName/{name}/Flags 32\
-         /FontBBox[0 0 600 800]/ItalicAngle 0/Ascent 800/Descent -200/CapHeight 700/StemV 80>>"
-    )
-}
-
 fn markdown(pdf: &[u8]) -> String {
     let doc = PdfParser::from_bytes(pdf).unwrap().parse().unwrap();
     to_markdown(&doc, &RenderOptions::default()).unwrap()
@@ -55,7 +45,7 @@ fn a_line_comment_does_not_swallow_the_next_declaration() {
         COURIER.to_string(),
         "/BaseFont/ABCDEF+Courier-Bold".to_string(),
         flagged("ABCDEF+FiraCode-Regular"),
-        uniform("Consolas"),
+        flagged("Consolas"),
     ] {
         let md = markdown(&page(content, &font));
         let lines: Vec<_> = md.lines().collect();
@@ -71,7 +61,7 @@ fn a_line_comment_does_not_swallow_the_next_declaration() {
 }
 
 /// A font's name is not what makes it fixed-pitch: a font named like a monospace family that
-/// neither declares FixedPitch nor gives its glyphs one width is read as prose.
+/// does not declare FixedPitch is read as prose.
 #[test]
 fn a_monospace_name_alone_is_not_fixed_pitch() {
     let content = b"BT /F2 11 Tf 72 700 Td (This sentence continues) Tj ET \

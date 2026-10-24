@@ -3545,7 +3545,7 @@ impl RawFontResolver {
             Some(DeclaredStyle {
                 bold,
                 italic,
-                fixed_pitch: flags & FIXED_PITCH != 0 || has_uniform_widths(doc, font.dict),
+                fixed_pitch: flags & FIXED_PITCH != 0,
             })
         })()
         .unwrap_or_default();
@@ -3593,30 +3593,6 @@ impl RawFontResolver {
 // ---------------------------------------------------------------------------
 // RawBackend helper functions
 // ---------------------------------------------------------------------------
-
-/// Whether a simple font's `/Widths` gives every glyph it draws the same advance -- fixed
-/// pitch by definition, whether or not the descriptor's flag says so. Too few glyphs to tell
-/// (fewer than ten with a width) is not fixed pitch.
-fn has_uniform_widths(doc: &RawDocument, font: &RawPdfDict) -> bool {
-    let Some(widths) = raw_dict_get(font, b"Widths").and_then(|w| doc.resolve(w).as_array()) else {
-        return false;
-    };
-    let mut drawn = widths
-        .iter()
-        .filter_map(|w| doc.resolve(w).as_f32())
-        .filter(|w| *w > 0.0);
-    let Some(first) = drawn.next() else {
-        return false;
-    };
-    let mut count = 1;
-    for w in drawn {
-        if (w - first).abs() > 0.5 {
-            return false;
-        }
-        count += 1;
-    }
-    count >= 10
-}
 
 /// Whether `base_font` names a standard Courier face (ISO 32000-1 §9.6.2.2), with or without
 /// a subset tag (`ABCDEF+Courier`).
