@@ -13,6 +13,11 @@
   table cell and a table row written as text joined their runs in the order they stand on the
   page -- visual order, so Arabic and Hebrew came out reversed there while multi-run lines were
   reordered. All of them now go through the same reordering.
+- **Text drawn only as a clipping path counts as shown once something is painted inside it.** In
+  rendering mode 7 the glyphs paint nothing themselves but become the clip; an image or fill
+  painted inside that clip shows through the letters (ISO 32000-1 §9.3.6). Such text was counted in
+  `invisible_text_chars`, as if it were an OCR layer; it now counts as painted when something is
+  painted before the graphics state that holds the clip is restored.
 
 ## 0.49.0 — 2026-10-24
 

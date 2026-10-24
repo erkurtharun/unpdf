@@ -1392,8 +1392,7 @@ impl<'a> LayoutAnalyzer<'a> {
         let mut blank_text_runs = 0u32;
         let mut margin_text_chars = 0usize;
         let mut fill_op_count = 0u32;
-        let mut invisible_chars = 0usize;
-        let mut total_chars = 0usize;
+        let mut painted = PaintTally::default();
         let mut suppressed_runs = 0usize;
         let mut unreadable_fonts: Vec<UnreadableFont> = Vec::new();
         let mut signals = PageTextLayerSignals::default();
@@ -1416,14 +1415,22 @@ impl<'a> LayoutAnalyzer<'a> {
             // 무관하게 항상 집계한다 (`Do` arm 은 page_area 가드가 있음).
             match op.operator.as_str() {
                 "Tj" | "TJ" | "'" | "\"" => self.text_op_count.set(self.text_op_count.get() + 1),
-                "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => fill_op_count += 1,
+                "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => {
+                    fill_op_count += 1;
+                    painted.paint();
+                }
+                "S" | "s" | "sh" => painted.paint(),
                 // An image paint maps the unit square through the CTM — an XObject's `Do`
                 // and an inline image (`BI ... EI`) alike. Forms are interpreted in place,
                 // so a `Do` left here is never a form's.
                 "Do" | "BI" => {
                     self.image_op_count.set(self.image_op_count.get() + 1);
                     image_rects.extend(clip.visible_part(&unit_square_on_page(&ctm)));
+                    painted.paint();
                 }
+                "q" => painted.save(),
+                "Q" => painted.restore(),
+                "ET" => painted.end_text(),
                 _ => {}
             }
             let operand = |i: usize| op.operands.get(i).and_then(get_number_from_value);
@@ -1712,12 +1719,7 @@ impl<'a> LayoutAnalyzer<'a> {
                                 margin_text_chars +=
                                     text.chars().filter(|c| !c.is_whitespace()).count();
                             }
-                            count_render_mode(
-                                &text,
-                                text_state.params.render_mode,
-                                &mut total_chars,
-                                &mut invisible_chars,
-                            );
+                            painted.text(&text, text_state.params.render_mode);
                             let mut span =
                                 TextSpan::new(text, x, y, effective_size, text_state.font.clone());
                             span.letter_spacing = letter_room;
@@ -1783,6 +1785,7 @@ impl<'a> LayoutAnalyzer<'a> {
             }
         }
 
+        let (total_chars, invisible_chars) = painted.finish();
         if total_chars > 0 {
             signals.invisible_char_ratio = invisible_chars as f32 / total_chars as f32;
         }
@@ -3299,14 +3302,67 @@ fn note_suppression(
     }
 }
 
-/// Tally characters by whether they were painted, for [`PageTextLayerSignals`].
+/// Tallies characters by whether they show on the page, for [`PageTextLayerSignals`].
 ///
-/// Rendering mode 3 (and 7, which only sets a clipping path) draws nothing.
-fn count_render_mode(text: &str, render_mode: i64, total: &mut usize, invisible: &mut usize) {
-    let chars = text.chars().filter(|c| !c.is_whitespace()).count();
-    *total += chars;
-    if render_mode == 3 || render_mode == 7 {
-        *invisible += chars;
+/// Rendering mode 3 draws nothing. Mode 7 draws nothing either, but adds the glyph
+/// outlines to the clipping path, which takes effect at `ET` and lasts until the `Q`
+/// that restores the graphics state (ISO 32000-1 §9.3.6, Table 106; §9.4.1). Whatever
+/// is painted inside that clip — typically an image — shows only through the glyphs,
+/// so the text is visible as the shape of that paint. A mode-7 character therefore
+/// counts as invisible until something is painted while its clip is in force.
+#[derive(Debug, Default)]
+struct PaintTally {
+    total: usize,
+    invisible: usize,
+    /// Mode-7 characters of the open text object; their clip starts at `ET`.
+    clip_pending: usize,
+    /// Mode-7 characters whose clip is in force and has shown nothing yet.
+    clip_armed: usize,
+    /// `clip_armed` as each `q` saved it.
+    saved: Vec<usize>,
+}
+
+impl PaintTally {
+    fn text(&mut self, text: &str, render_mode: i64) {
+        let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+        self.total += chars;
+        match render_mode {
+            3 => self.invisible += chars,
+            7 => {
+                self.invisible += chars;
+                self.clip_pending += chars;
+            }
+            // A painting mode paints inside whatever clip is in force.
+            _ => self.paint(),
+        }
+    }
+
+    fn end_text(&mut self) {
+        self.clip_armed += std::mem::take(&mut self.clip_pending);
+    }
+
+    /// Something was painted: every text clip in force now shows its glyphs.
+    fn paint(&mut self) {
+        self.invisible -= std::mem::take(&mut self.clip_armed);
+        // Outer clips are in force too and have just shown; what `Q` restores must not
+        // count them again.
+        self.saved.iter_mut().for_each(|armed| *armed = 0);
+    }
+
+    fn save(&mut self) {
+        self.saved.push(self.clip_armed);
+    }
+
+    fn restore(&mut self) {
+        // The clip set inside this `q` ends here, still unpainted if it is armed.
+        if let Some(armed) = self.saved.pop() {
+            self.clip_armed = armed;
+        }
+    }
+
+    /// `(total, invisible)` non-whitespace characters.
+    fn finish(&self) -> (usize, usize) {
+        (self.total, self.invisible)
     }
 }
 

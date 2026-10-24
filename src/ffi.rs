@@ -1125,8 +1125,8 @@ unparser_shared::export_string_getter!(
     /// - `rotated_text_runs`: text runs not set horizontally left to right. The reading
     ///   order treats them as horizontal, so their order may be wrong.
     /// - `invisible_text_chars` / `painted_text_chars`: characters other than whitespace
-    ///   drawn in a rendering mode that paints nothing (3 or 7), as in a searchable scan, and
-    ///   in one that paints them. Invisible text is extracted although nothing shows it,
+    ///   drawn in a rendering mode that paints nothing (3, or 7 with nothing painted inside
+    ///   its clip), as in a searchable scan, and in one that paints them. Invisible text is extracted although nothing shows it,
     ///   unless `ocr_text_suppressed` dropped it, which leaves the count as it was.
     /// - `margin_text_chars`: the painted characters whose baseline is in the top or bottom
     ///   tenth of the page as shown (its `/Rotate` applied), where running heads and page

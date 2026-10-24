@@ -244,7 +244,8 @@ public sealed class PageStats
 
     /// <summary>
     /// Characters other than whitespace drawn in a rendering mode that paints nothing (3, or
-    /// 7, which only adds to the clipping path), as in the OCR layer of a searchable scan.
+    /// 7, which only adds to the clipping path, when nothing is painted inside that clip), as
+    /// in the OCR layer of a searchable scan.
     /// Their text is extracted although nothing shows it, unless the OCR layer was dropped
     /// (<see cref="OcrTextSuppressed"/>), which leaves this count as it was.
     /// </summary>

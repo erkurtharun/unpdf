@@ -324,8 +324,8 @@ char* unpdf_get_extraction_quality(const UnpdfDocument* doc);
  * image_coverage is the share of the page painted by images (0 to 1).
  * rotated_text_runs counts text not set horizontally left to right.
  * invisible_text_chars / painted_text_chars count characters other than
- * whitespace drawn in a rendering mode that paints nothing (3 or 7) and in one
- * that paints them. Invisible text is extracted although nothing shows it,
+ * whitespace drawn in a rendering mode that paints nothing (3, or 7 with nothing
+ * painted inside its clip) and in one that paints them. Invisible text is extracted although nothing shows it,
  * unless ocr_text_suppressed dropped it, which leaves the count as it was.
  * margin_text_chars counts the painted ones whose baseline is in the top or
  * bottom tenth of the page as shown (its /Rotate applied), where running

@@ -141,6 +141,21 @@ fn text_that_paints_nothing_is_counted_and_kept() {
 }
 
 #[test]
+fn clipping_text_shows_once_something_is_painted_inside_its_clip() {
+    // Mode 7 adds the glyphs to the clip at `ET`; a fill inside that clip shows
+    // through them (ISO 32000-1 §9.3.6). Restoring the state first ends the clip.
+    let page = only_page(&page_pdf(
+        "",
+        A4,
+        b"q BT 7 Tr /F1 24 Tf 72 600 Td (Seen through) Tj ET 0 0 595 842 re f Q \
+          q BT 7 Tr /F1 24 Tf 72 500 Td (Never shown) Tj ET Q 0 0 595 842 re f \
+          q BT 7 Tr /F1 24 Tf 72 400 Td (Outer) Tj ET q 0 0 595 842 re f Q Q",
+    ));
+    assert_eq!(page.painted_text_chars, 11 + 5);
+    assert_eq!(page.invisible_text_chars, 10);
+}
+
+#[test]
 fn text_the_clip_hides_is_counted_and_left_out() {
     let page = only_page(&page_pdf(
         "",
