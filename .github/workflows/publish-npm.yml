@@ -67,13 +67,15 @@ jobs:
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('unpdf-wasm/pkg/package.json', 'utf8'));
             pkg.name = '@iyulab/unpdf';
+            // npm packs README and LICENSE on its own; any other file only when listed here.
+            pkg.files = [...(pkg.files || []), 'THIRD-PARTY-NOTICES'];
             fs.writeFileSync('unpdf-wasm/pkg/package.json', JSON.stringify(pkg, null, 2));
           "
 
-      - name: Copy README and LICENSE to pkg
+      - name: Copy README, LICENSE and third-party notices to pkg
         run: |
           cp bindings/wasm/README.md unpdf-wasm/pkg/
-          cp LICENSE unpdf-wasm/pkg/
+          cp LICENSE THIRD-PARTY-NOTICES unpdf-wasm/pkg/
 
       - name: Publish to npm (public)
         run: wasm-pack publish unpdf-wasm --access public

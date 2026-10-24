@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Every package carries the third-party notices for the data it builds in.** Adobe's CMap
+  CID-to-Unicode tables (`cmap-data/`), the Adobe Glyph List and the Core14 AFM widths are
+  compiled into every build, and the Symbol and ZapfDingbats maps come from the Unicode
+  Consortium's Adobe vendor mappings, but `THIRD-PARTY-NOTICES` named only PDFium's fonts and
+  CMYK table. It now carries all of them, and it ships in every package: the npm package and
+  the CLI and C-library archives of a GitHub release carried no notices at all (the archives
+  no license text either), and the Python package's copy had fallen behind the root file.
+  (#18, @erkurtharun)
+
 ## 0.48.0 — 2026-10-20
 
 ### Added
