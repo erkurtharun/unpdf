@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use super::encoding::{glyph_name_to_unicode, BaseEncoding};
+use super::encoding::{glyph_name_to_text, glyph_name_to_unicode, BaseEncoding, EncodingMap};
 
 /// Where an outline goes: glyph-space path operations, as a charstring draws them.
 pub(crate) trait OutlineSink {
@@ -539,15 +539,15 @@ fn private_programs(private: &[u8]) -> (Vec<Vec<u8>>, Vec<NamedCharstring>) {
 /// encoding a font with no `/Encoding` uses, and the base its `/Differences` apply to when
 /// it names none (ISO 32000-1 §9.6.6.1). Only the cleartext part is read. `None` when
 /// `data` is not a Type 1 program.
-pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<HashMap<u8, char>> {
+pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<EncodingMap> {
     let eexec = find(data, b"eexec")?;
     Some(match builtin_encoding(&data[..eexec]) {
         BuiltinEncoding::Standard => (0..=255u8)
-            .filter_map(|code| Some((code, BaseEncoding::Standard.decode_char(code)?)))
+            .filter_map(|code| Some((code, BaseEncoding::Standard.decode_char(code)?.to_string())))
             .collect(),
         BuiltinEncoding::Custom(names) => names
             .into_iter()
-            .filter_map(|(code, name)| Some((code, glyph_name_to_unicode(&name)?)))
+            .filter_map(|(code, name)| Some((code, glyph_name_to_text(&name)?)))
             .collect(),
     })
 }

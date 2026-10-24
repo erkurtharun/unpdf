@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use super::encoding::EncodingMap;
+
 // ---------------------------------------------------------------------------
 // Simple text decoding
 // ---------------------------------------------------------------------------
@@ -79,18 +81,14 @@ impl ToUnicodeMap {
     /// glyph to a "no mapping" sentinel would otherwise silently drop that glyph
     /// from a run whose other codes decode (`314` read back as `34`), while the
     /// encoding still names it (`/one.SP`).
-    pub(crate) fn decode_with_fallback(
-        &self,
-        bytes: &[u8],
-        fallback: &HashMap<u8, char>,
-    ) -> String {
+    pub(crate) fn decode_with_fallback(&self, bytes: &[u8], fallback: &EncodingMap) -> String {
         debug_assert_eq!(self.code_width, 1);
         let mut result = String::new();
         for &b in bytes {
             if let Some(s) = self.mappings.get(&u32::from(b)) {
                 result.push_str(s);
-            } else if let Some(&ch) = fallback.get(&b) {
-                result.push(ch);
+            } else if let Some(text) = fallback.get(&b) {
+                result.push_str(text);
             }
         }
         result
@@ -896,7 +894,9 @@ endcodespacerange
 <0A> <0034>
 endbfchar";
         let map = parse_to_unicode_cmap(cmap).unwrap();
-        let encoding: HashMap<u8, char> = [(0x13, '1'), (0x0D, 'x')].into_iter().collect();
+        let encoding: EncodingMap = [(0x13, "1".into()), (0x0D, "x".into())]
+            .into_iter()
+            .collect();
         assert_eq!(map.decode(&[0x0D, 0x13, 0x0A]), "34");
         assert_eq!(
             map.decode_with_fallback(&[0x0D, 0x13, 0x0A], &encoding),

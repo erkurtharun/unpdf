@@ -76,3 +76,27 @@ fn symbol_differences_apply_to_symbols_own_encoding() {
         "alpha, beta from Symbol's encoding, gamma from /Differences, got {text:?}"
     );
 }
+
+#[test]
+fn ligature_names_in_differences_read_as_their_letters() {
+    let content = b"BT /F1 12 Tf 72 700 Td (\\200e classi\\201es a\\202er) Tj ET\n";
+    let pdf = common::assemble(vec![
+        b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 5 0 R>>>>\
+          /Contents 4 0 R>>"
+            .to_vec(),
+        common::stream_object(&format!("<</Length {}>>", content.len()), content),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding<</Type/Encoding\
+          /BaseEncoding/WinAnsiEncoding/Differences[128/T_h/uni00660069/f_t]>>>>"
+            .to_vec(),
+    ]);
+    let doc = PdfParser::from_bytes(&pdf)
+        .and_then(|p| p.parse())
+        .expect("synthetic PDF should parse");
+    let text = to_text(&doc, &RenderOptions::default()).expect("text renders");
+    assert!(
+        text.contains("The classifies after"),
+        "each ligature reads as the letters it joins, got {text:?}"
+    );
+}

@@ -8,16 +8,14 @@
 //! `CharStrings` operators, and the charset and encoding tables. A CID-keyed font (`ROS` in
 //! its Top DICT) maps codes through a CMap instead and is not read here.
 
-use std::collections::HashMap;
-
 use super::cff_strings::STANDARD_STRINGS;
-use super::encoding::{glyph_name_to_unicode, BaseEncoding};
+use super::encoding::{glyph_name_to_text, BaseEncoding, EncodingMap};
 
 /// What each code is in a bare CFF program's built-in encoding — the encoding a font with no
 /// `/Encoding` uses, and the base its `/Differences` apply to when it names none (ISO
 /// 32000-1 §9.6.6.1). `None` when `data` is not a CFF program this reads (CID-keyed, the
 /// Expert encoding or charsets, or damaged).
-pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<HashMap<u8, char>> {
+pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<EncodingMap> {
     let header_size = usize::from(*data.get(2)?);
     let (_names, at) = index(data, header_size)?;
     let (top_dicts, at) = index(data, at)?;
@@ -41,7 +39,9 @@ pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<HashMap<u8, char>> {
         0 => {
             return Some(
                 (0..=255u8)
-                    .filter_map(|code| Some((code, BaseEncoding::Standard.decode_char(code)?)))
+                    .filter_map(|code| {
+                        Some((code, BaseEncoding::Standard.decode_char(code)?.to_string()))
+                    })
                     .collect(),
             )
         }
@@ -56,7 +56,7 @@ pub(crate) fn builtin_encoding_chars(data: &[u8]) -> Option<HashMap<u8, char>> {
                     Glyph::Index(gid) => charset_sid(data, top.charset, glyphs, gid)?,
                     Glyph::String(sid) => sid,
                 };
-                Some((code, glyph_name_to_unicode(string(sid)?)?))
+                Some((code, glyph_name_to_text(string(sid)?)?))
             })
             .collect(),
     )
@@ -380,10 +380,11 @@ mod tests {
         let enc = vec![0, 3, 11, 92, b'c'];
         let data = program(&["ff", "quotedblleft", "c"], Some(enc), &[]);
         let map = builtin_encoding_chars(&data).expect("reads");
-        assert_eq!(map.get(&11), Some(&'\u{FB00}'));
-        assert_eq!(map.get(&92), Some(&'\u{201C}'));
-        assert_eq!(map.get(&b'c'), Some(&'c'));
-        assert_eq!(map.get(&b'd'), None);
+        let get = |code| map.get(&code).map(String::as_str);
+        assert_eq!(get(11), Some("\u{FB00}"));
+        assert_eq!(get(92), Some("\u{201C}"));
+        assert_eq!(get(b'c'), Some("c"));
+        assert_eq!(get(b'd'), None);
     }
 
     #[test]
@@ -393,16 +394,17 @@ mod tests {
         let enc = vec![0x81, 1, 65, 1, 1, 200, 0, 35];
         let data = program(&["A", "B"], Some(enc), &[]);
         let map = builtin_encoding_chars(&data).expect("reads");
-        assert_eq!(map.get(&65), Some(&'A'));
-        assert_eq!(map.get(&66), Some(&'B'));
-        assert_eq!(map.get(&200), Some(&'B'));
+        let get = |code| map.get(&code).map(String::as_str);
+        assert_eq!(get(65), Some("A"));
+        assert_eq!(get(66), Some("B"));
+        assert_eq!(get(200), Some("B"));
     }
 
     #[test]
     fn the_standard_encoding_is_standard_encoding() {
         let data = program(&["A"], None, &[]);
         let map = builtin_encoding_chars(&data).expect("reads");
-        assert_eq!(map.get(&0x27), Some(&'\u{2019}'));
+        assert_eq!(map.get(&0x27).map(String::as_str), Some("\u{2019}"));
     }
 
     #[test]

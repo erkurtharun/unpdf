@@ -12,7 +12,8 @@ use crate::model::{FieldType, FieldValue, FormField};
 use super::cmap::{CMap, CMapDef, Parent, MAX_USE_CMAP_DEPTH};
 use super::core14::StandardFont;
 use super::encoding::{
-    build_encoding_map, decode_with_encoding_map, glyph_name_to_unicode, BaseEncoding,
+    build_encoding_map, decode_with_encoding_map, glyph_name_to_text, single_char, BaseEncoding,
+    EncodingMap,
 };
 use super::font::{
     is_likely_binary, parse_to_unicode_cmap, parse_truetype_cmap_table, ToUnicodeMap,
@@ -2610,8 +2611,8 @@ struct RawFontResolver {
     /// The `cmap` table of a composite font's embedded TrueType program, by the Type 0
     /// font: its CIDFont may be written inline, with no identity of its own.
     embedded_cmap_cache: RwLock<HashMap<FontKey, Option<ToUnicodeMap>>>,
-    encoding_cache: RwLock<HashMap<FontKey, Option<HashMap<u8, char>>>>,
-    program_encoding_cache: RwLock<HashMap<FontKey, Option<HashMap<u8, char>>>>,
+    encoding_cache: RwLock<HashMap<FontKey, Option<EncodingMap>>>,
+    program_encoding_cache: RwLock<HashMap<FontKey, Option<EncodingMap>>>,
     style_cache: RwLock<HashMap<FontKey, DeclaredStyle>>,
     cid_system_info_cache: RwLock<HashMap<FontKey, Option<(String, String)>>>,
     /// A composite font's resolved `/Encoding`, shared by text decoding and widths.
@@ -3204,7 +3205,11 @@ impl RawFontResolver {
             format,
             data,
             selection: GlyphSelection::Simple {
-                chars: self.get_encoding_map(doc, font),
+                chars: self.get_encoding_map(doc, font).map(|map| {
+                    map.into_iter()
+                        .filter_map(|(code, text)| Some((code, single_char(&text)?)))
+                        .collect()
+                }),
                 names,
                 symbolic,
             },
@@ -3247,7 +3252,7 @@ impl RawFontResolver {
     }
 
     /// Get or parse the encoding map for a font.
-    fn get_encoding_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<HashMap<u8, char>> {
+    fn get_encoding_map(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<EncodingMap> {
         {
             let cache = self.encoding_cache.read().unwrap();
             if let Some(cached) = cache.get(&font.key) {
@@ -3269,7 +3274,7 @@ impl RawFontResolver {
     /// implicit base is the program's own encoding, not StandardEncoding). Read for a Type 1
     /// program (`/FontFile`) and a bare CFF one (`/FontFile3 /Type1C`); `None` for any
     /// other font.
-    fn program_encoding(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<HashMap<u8, char>> {
+    fn program_encoding(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<EncodingMap> {
         if let Some(cached) = self.program_encoding_cache.read().unwrap().get(&font.key) {
             return cached.clone();
         }
@@ -3293,11 +3298,7 @@ impl RawFontResolver {
     /// The /Encoding can be:
     /// - A Name (e.g., /WinAnsiEncoding) → use that base encoding directly
     /// - A Dict with /BaseEncoding and /Differences → build a custom encoding map
-    fn parse_encoding_dict(
-        &self,
-        doc: &RawDocument,
-        font: &FontRef<'_>,
-    ) -> Option<HashMap<u8, char>> {
+    fn parse_encoding_dict(&self, doc: &RawDocument, font: &FontRef<'_>) -> Option<EncodingMap> {
         let font_dict = font.dict;
         let encoding_obj = raw_dict_get(font_dict, b"Encoding")?;
         let encoding_obj = doc.resolve(encoding_obj);
@@ -3342,7 +3343,7 @@ impl RawFontResolver {
         font: &FontRef<'_>,
         dict: &RawPdfDict,
         differences: &[(u8, String)],
-    ) -> HashMap<u8, char> {
+    ) -> EncodingMap {
         let named = raw_dict_get(dict, b"BaseEncoding")
             .and_then(|b| b.as_name())
             .and_then(BaseEncoding::from_name);
@@ -3353,8 +3354,8 @@ impl RawFontResolver {
             });
             if let Some(mut map) = own {
                 for (code, name) in differences {
-                    if let Some(ch) = glyph_name_to_unicode(name) {
-                        map.insert(*code, ch);
+                    if let Some(text) = glyph_name_to_text(name) {
+                        map.insert(*code, text);
                     }
                 }
                 return map;

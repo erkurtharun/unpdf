@@ -13,11 +13,10 @@
 //!
 //! Both are generated into [`super::core14_data`].
 
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::core14_data as data;
-use super::encoding::{build_encoding_map, BaseEncoding};
+use super::encoding::{build_encoding_map, BaseEncoding, EncodingMap};
 
 /// One of the standard 14 fonts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,15 +79,17 @@ impl StandardFont {
     /// ZapfDingbats, whose codes index their own built-in encoding. A code with no
     /// glyph gets 0 — the text decoder drops the same code, so the run's extent
     /// and its text stay consistent.
-    pub(crate) fn widths_by_code(&self, encoding: &HashMap<u8, char>) -> Vec<f32> {
+    pub(crate) fn widths_by_code(&self, encoding: &EncodingMap) -> Vec<f32> {
         let by_code = |widths: &[u16; 256]| widths.iter().map(|&w| f32::from(w)).collect();
         match self {
             Self::Latin(widths) => (0u8..=255)
                 .map(|code| {
-                    encoding
-                        .get(&code)
-                        .and_then(|ch| data::LATIN_CHARS.binary_search(ch).ok())
-                        .map_or(0.0, |i| f32::from(widths[i]))
+                    encoding.get(&code).map_or(0.0, |text| {
+                        text.chars()
+                            .filter_map(|ch| data::LATIN_CHARS.binary_search(&ch).ok())
+                            .map(|i| f32::from(widths[i]))
+                            .sum()
+                    })
                 })
                 .collect(),
             Self::Symbol => by_code(&data::SYMBOL),
@@ -99,10 +100,10 @@ impl StandardFont {
     /// The code → character map the font uses when its dictionary has no
     /// `/Encoding` (ISO 32000-1 §9.6.6): StandardEncoding for the Latin faces, and
     /// each symbolic font's own encoding. Built once, shared by every font.
-    pub(crate) fn builtin_encoding(&self) -> &'static HashMap<u8, char> {
-        static STANDARD: OnceLock<HashMap<u8, char>> = OnceLock::new();
-        static SYMBOL: OnceLock<HashMap<u8, char>> = OnceLock::new();
-        static ZAPF_DINGBATS: OnceLock<HashMap<u8, char>> = OnceLock::new();
+    pub(crate) fn builtin_encoding(&self) -> &'static EncodingMap {
+        static STANDARD: OnceLock<EncodingMap> = OnceLock::new();
+        static SYMBOL: OnceLock<EncodingMap> = OnceLock::new();
+        static ZAPF_DINGBATS: OnceLock<EncodingMap> = OnceLock::new();
         match self {
             Self::Latin(_) => {
                 STANDARD.get_or_init(|| build_encoding_map(Some(BaseEncoding::Standard), &[]))
@@ -116,11 +117,11 @@ impl StandardFont {
 }
 
 /// A generated code → scalar-value table as a map, 0 meaning "no glyph".
-fn from_unicode_table(table: &[u32; 256]) -> HashMap<u8, char> {
+fn from_unicode_table(table: &[u32; 256]) -> EncodingMap {
     (0u8..=255)
         .filter_map(|code| match table[usize::from(code)] {
             0 => None,
-            cp => Some((code, char::from_u32(cp)?)),
+            cp => Some((code, char::from_u32(cp)?.to_string())),
         })
         .collect()
 }
@@ -259,6 +260,14 @@ mod tests {
     }
 
     #[test]
+    fn a_ligature_is_as_wide_as_its_letters() {
+        let (f, i) = (278.0, 222.0);
+        let font = StandardFont::from_base_font(b"Helvetica").unwrap();
+        let custom = build_encoding_map(Some(BaseEncoding::WinAnsi), &[(0x80, "f_i".to_string())]);
+        assert_eq!(font.widths_by_code(&custom)[0x80], f + i);
+    }
+
+    #[test]
     fn courier_is_monospaced_and_unmapped_codes_are_zero() {
         let font = StandardFont::from_base_font(b"Courier").unwrap();
         let widths = font.widths_by_code(&build_encoding_map(Some(BaseEncoding::WinAnsi), &[]));
@@ -271,25 +280,25 @@ mod tests {
         let symbol = StandardFont::from_base_font(b"Symbol")
             .unwrap()
             .builtin_encoding();
-        assert_eq!(symbol.get(&b'a'), Some(&'\u{03B1}')); // alpha
-        assert_eq!(symbol.get(&b'D'), Some(&'\u{0394}')); // Delta
+        assert_eq!(symbol.get(&b'a').map(String::as_str), Some("\u{03B1}")); // alpha
+        assert_eq!(symbol.get(&b'D').map(String::as_str), Some("\u{0394}")); // Delta
         let dingbats = StandardFont::from_base_font(b"ZapfDingbats")
             .unwrap()
             .builtin_encoding();
-        assert_eq!(dingbats.get(&b'4'), Some(&'\u{2714}')); // heavy check mark
-        assert_eq!(dingbats.get(&b'l'), Some(&'\u{25CF}')); // black circle
+        assert_eq!(dingbats.get(&b'4').map(String::as_str), Some("\u{2714}")); // heavy check mark
+        assert_eq!(dingbats.get(&b'l').map(String::as_str), Some("\u{25CF}")); // black circle
         assert_eq!(dingbats.get(&0x00), None);
         // The Latin faces use StandardEncoding: 0x27 is a right single quote there.
         let helvetica = StandardFont::from_base_font(b"Helvetica")
             .unwrap()
             .builtin_encoding();
-        assert_eq!(helvetica.get(&0x27), Some(&'\u{2019}'));
+        assert_eq!(helvetica.get(&0x27).map(String::as_str), Some("\u{2019}"));
     }
 
     #[test]
     fn symbolic_fonts_use_their_built_in_codes() {
         // Symbol AFM: code 0x61 is `alpha` (631); ZapfDingbats 0x21 is `a1` (974).
-        let empty = HashMap::new();
+        let empty = EncodingMap::new();
         let symbol = StandardFont::from_base_font(b"Symbol").unwrap();
         assert_eq!(symbol.widths_by_code(&empty)[0x61], 631.0);
         let dingbats = StandardFont::from_base_font(b"ZapfDingbats").unwrap();
