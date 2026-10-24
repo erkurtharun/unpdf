@@ -898,7 +898,11 @@ fn continues_after_a_wrap(prev: &str, curr: &str, prev_wraps: bool) -> bool {
     let closes = prev
         .trim_end()
         .ends_with(['.', ':', ';', '!', '?', '。', '：']);
-    prev_wraps && (opens_with_dash || opens_with_number_against_a_word(curr)) && !closes
+    // A number after a line that is itself a list item is the next item, not a reference the
+    // item's sentence carried over.
+    let numbered_continuation =
+        opens_with_number_against_a_word(curr) && detect_list_marker(prev).is_none();
+    prev_wraps && (opens_with_dash || numbered_continuation) && !closes
 }
 
 /// Whether `text` opens with a list number set against its first word, no gap between them
@@ -4192,6 +4196,12 @@ mod tests {
             "as set out in Chapter",
             "3.Results",
             false
+        ));
+        // After a list item, the next number is the next item.
+        assert!(!continues_after_a_wrap(
+            "1.First numbered item",
+            "2.Second numbered item",
+            true
         ));
         // A number with a space after it opens an item, as before.
         assert!(!continues_after_a_wrap(
