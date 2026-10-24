@@ -3496,6 +3496,53 @@ fn attach_script_lines(lines: Vec<TextLine>) -> Vec<TextLine> {
     out
 }
 
+/// How a run sits against the text of its line: a script is set no larger than
+/// [`SCRIPT_MAX_SIZE`] of the line's size and within [`SCRIPT_MAX_SHIFT`] of its baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScriptShift {
+    /// Raised by at least [`SUPERSCRIPT_MIN_RISE`] of the line's size.
+    Raised,
+    /// Lowered by at least [`SUBSCRIPT_MIN_DROP`] of the line's size.
+    Lowered,
+    /// Smaller and near the baseline, but not moved off it far enough to be either.
+    Level,
+}
+
+/// The largest size, as a share of its line's, a script is set at.
+pub(crate) const SCRIPT_MAX_SIZE: f32 = 0.9;
+/// The farthest, as a share of its line's size, a script is moved off the line's baseline.
+pub(crate) const SCRIPT_MAX_SHIFT: f32 = 0.6;
+/// The least rise, as a share of its line's size, that makes a superscript.
+pub(crate) const SUPERSCRIPT_MIN_RISE: f32 = 1.0 / 7.0;
+/// The least drop, as a share of its line's size, that makes a subscript.
+pub(crate) const SUBSCRIPT_MIN_DROP: f32 = 1.0 / 10.0;
+
+/// Where text of `size` standing on `y` sits as a script of a line of `owner_size` whose
+/// baseline is `owner_y` — `None` when it is no script of it: not set smaller, or moved off
+/// the baseline farther than a script is. The one definition both the reading order (which
+/// folds a script line into its owner) and the inline styles (which mark it) use.
+pub(crate) fn script_shift(
+    size: f32,
+    y: f32,
+    owner_size: f32,
+    owner_y: f32,
+) -> Option<ScriptShift> {
+    if owner_size <= 0.0 || size > owner_size * SCRIPT_MAX_SIZE {
+        return None;
+    }
+    let shift = y - owner_y;
+    if shift.abs() > owner_size * SCRIPT_MAX_SHIFT {
+        return None;
+    }
+    Some(if shift >= owner_size * SUPERSCRIPT_MIN_RISE {
+        ScriptShift::Raised
+    } else if shift <= -owner_size * SUBSCRIPT_MIN_DROP {
+        ScriptShift::Lowered
+    } else {
+        ScriptShift::Level
+    })
+}
+
 /// Whether every span of `line` reads as a script of `owner`: set clearly smaller,
 /// shifted off `owner`'s baseline by less than a script's usual rise or drop, and sitting
 /// beside `owner`'s text rather than over it.
@@ -3513,9 +3560,11 @@ fn is_script_of(line: &TextLine, owner: &TextLine) -> bool {
     if line.is_rotated() || owner.is_rotated() {
         return false;
     }
-    let smaller = line.spans.iter().all(|s| s.font_size <= size * 0.9);
-    let near = (line.y - owner.y).abs() <= size * 0.6;
-    if !smaller || !near {
+    if !line
+        .spans
+        .iter()
+        .all(|s| script_shift(s.font_size, line.y, size, owner.y).is_some())
+    {
         return false;
     }
     let extent = |s: &TextSpan| {

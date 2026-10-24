@@ -13,6 +13,7 @@ use crate::model::{
 };
 
 use super::backend::{CodecParms, PdfBackend, RawBackend, RawXObject};
+use super::layout::{ScriptShift, SCRIPT_MAX_SIZE};
 use super::options::{ErrorMode, ParseOptions};
 
 /// PDF document parser.
@@ -526,9 +527,10 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
                 in_word[line_idx - 1],
             );
             if !join.is_empty() {
-                push_run(&mut runs, join, false, false);
+                push_run(&mut runs, join, TextStyle::default());
             }
         }
+        let shifts = script_shifts(line);
         for (piece, span_idx) in line.styled_segments() {
             let span = &line.spans[span_idx];
             let piece = if at_line_start {
@@ -540,7 +542,30 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
                 continue;
             }
             at_line_start = false;
-            push_run(&mut runs, piece, span.is_bold, span.is_italic);
+            let style = TextStyle {
+                bold: span.is_bold,
+                italic: span.is_italic,
+                ..Default::default()
+            };
+            let (superscript, subscript) = match shifts[span_idx] {
+                Some(ScriptShift::Raised) => (true, false),
+                Some(ScriptShift::Lowered) => (false, true),
+                _ => (false, false),
+            };
+            if superscript || subscript {
+                let ink = piece.trim();
+                let start = piece.len() - piece.trim_start().len();
+                push_run(&mut runs, &piece[..start], style.clone());
+                let script = TextStyle {
+                    superscript,
+                    subscript,
+                    ..style.clone()
+                };
+                push_run(&mut runs, ink, script);
+                push_run(&mut runs, &piece[start + ink.len()..], style);
+            } else {
+                push_run(&mut runs, piece, style);
+            }
         }
     }
 
@@ -549,26 +574,55 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
     para
 }
 
-/// Append `text` as a run with the given emphasis, merging into the previous
+/// The baseline of a line's text at its own size: that of its longest run set larger than a
+/// script is, or the line's when it has none.
+fn body_baseline(line: &super::layout::TextLine) -> f32 {
+    line.spans
+        .iter()
+        .filter(|s| !s.is_rotated() && s.font_size > line.font_size * SCRIPT_MAX_SIZE)
+        .max_by_key(|s| s.text.trim().chars().count())
+        .map_or(line.y, |s| s.y)
+}
+
+/// How each span of `line` sits as a script against the line's body text, by the definition
+/// the reading order folds scripts with ([`super::layout::script_shift`]).
+fn script_shifts(line: &super::layout::TextLine) -> Vec<Option<ScriptShift>> {
+    let baseline = body_baseline(line);
+    line.spans
+        .iter()
+        .map(|s| {
+            (!s.is_rotated())
+                .then(|| super::layout::script_shift(s.font_size, s.y, line.font_size, baseline))
+                .flatten()
+        })
+        .collect()
+}
+
+/// Append `text` as a run with the given style, merging into the previous
 /// run when it carries the same style so consecutive same-style spans don't
 /// produce back-to-back `**a****b**` fragments.
-fn push_run(runs: &mut Vec<TextRun>, text: &str, bold: bool, italic: bool) {
+fn push_run(runs: &mut Vec<TextRun>, text: &str, style: TextStyle) {
     if text.is_empty() {
         return;
     }
     if let Some(last) = runs.last_mut() {
-        if last.style.bold == bold && last.style.italic == italic {
+        let decorations = |s: &TextStyle| {
+            (
+                s.bold,
+                s.italic,
+                s.strikethrough,
+                s.superscript,
+                s.subscript,
+            )
+        };
+        if decorations(&last.style) == decorations(&style) {
             last.text.push_str(text);
             return;
         }
     }
     runs.push(TextRun {
         text: text.to_string(),
-        style: TextStyle {
-            bold,
-            italic,
-            ..Default::default()
-        },
+        style,
     });
 }
 

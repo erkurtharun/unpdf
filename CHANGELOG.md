@@ -68,6 +68,13 @@
   lacks a glyph (LibreOffice for U+1D11E in Liberation Serif) leaves its advance blank in a TJ
   array and draws it in another font afterwards; the glyph read after the whole run. A run is split
   at a blank that a run drawn later on its baseline fills.
+- **Superscripts and subscripts keep their style.** A PDF's text runs carried bold and italic
+  only, so a footnote mark, a citation or the `2` of `CO2` came out as plain text. A run set no
+  larger than nine tenths of its line and raised by a seventh of the line's size or lowered by a
+  tenth -- within the six tenths a script may move, the same bounds the reading order folds a
+  script line into its owner by -- is written as a superscript or a subscript. The numerator of
+  a fraction stacked inline reads as a superscript. A line of punctuation set in script markup
+  is still dropped as punctuation only. (based on #12, @erkurtharun)
 
 ## 0.48.0 — 2026-10-20
 
