@@ -2,7 +2,7 @@
 
 # Benchmarks
 
-Measured on **unpdf 0.43.0** (the published package) on 2026-10-13. Scores come from each benchmark's own evaluator; nothing here is re-implemented.
+Measured on **unpdf 0.50.0** (the published package) on 2026-10-24. Scores come from each benchmark's own evaluator; nothing here is re-implemented.
 
 ## opendataloader-bench
 
@@ -10,10 +10,10 @@ Measured on **unpdf 0.43.0** (the published package) on 2026-10-13. Scores come 
 
 | Metric | Score | Documents scored |
 |---|---|---|
-| Overall | **0.903** | 200 |
+| Overall | **0.904** | 200 |
 | NID | 0.932 | 200 |
-| TEDS | 0.879 | 42 |
-| MHS | 0.831 | 107 |
+| TEDS | 0.880 | 42 |
+| MHS | 0.834 | 107 |
 
 ### Compared with other engines (rank 2 of 20)
 
@@ -26,7 +26,7 @@ ms/page is conversion time per page on one machine (AMD Ryzen 5 3500U with Radeo
 | Engine | Version | Overall | NID | TEDS | MHS | ms/page | Measured |
 |---|---|---|---|---|---|---|---|
 | opendataloader-hybrid | 2.2.1 | 0.907 | 0.934 | 0.928 | 0.821 | -- | 2026-04-06 |
-| **unpdf** | 0.43.0 | 0.903 | 0.932 | 0.879 | 0.831 | 19.5 | 2026-10-13 |
+| **unpdf** | 0.50.0 | 0.904 | 0.932 | 0.880 | 0.834 | 20.5 | 2026-10-24 |
 | docling | 2.135.0 | 0.891 | 0.905 | 0.925 | 0.830 | -- | 2026-10-08 (measured here) |
 | nutrient | 1.0.1 | 0.885 | 0.925 | 0.708 | 0.819 | -- | 2026-04-30 |
 | liteparse | 2.15.1 | 0.883 | 0.912 | 0.818 | 0.821 | 8.6 | 2026-10-09 (measured here) |
@@ -53,7 +53,7 @@ Reproduce:
 ```bash
 # Python 3.13 or newer (what the evaluator declares)
 git clone https://github.com/opendataloader-project/opendataloader-bench && cd opendataloader-bench && git checkout 7af1d8f4d0c09f51ea1a5c6ba5f66e993286d109
-pip install unpdf-markdown==0.43.0 apted rapidfuzz beautifulsoup4 lxml
+pip install unpdf-markdown==0.50.0 apted rapidfuzz beautifulsoup4 lxml
 python - <<'EOF'
 import pathlib, unpdf
 out = pathlib.Path('prediction/unpdf/markdown')
@@ -69,17 +69,17 @@ python src/evaluator.py --prediction-root prediction --engine unpdf
 
 [olmOCR-Bench](https://huggingface.co/datasets/allenai/olmOCR-bench) (ODC-BY): 1,403 PDF pages checked by unit tests (text present/absent, reading order, tables). Scored with the official [`olmocr.bench`](https://github.com/allenai/olmocr) scorer.
 
-Average of the 8 per-file scores below, as the official scorer reports it: **38.0%**. Read it by file: `arxiv_math` and `old_scans_math` require LaTeX math output, and `old_scans` requires OCR of scanned pages -- both outside what a text-layer extractor does. `baseline` is the benchmark's sanity check that each page's output is not blank, not endlessly repeating, and in the expected character sets.
+Average of the 8 per-file scores below, as the official scorer reports it: **38.4%**. Read it by file: `arxiv_math` and `old_scans_math` require LaTeX math output, and `old_scans` requires OCR of scanned pages -- both outside what a text-layer extractor does. `baseline` is the benchmark's sanity check that each page's output is not blank, not endlessly repeating, and in the expected character sets.
 
 | Test file | Pass rate | Tests |
 |---|---|---|
 | arxiv_math | 0.6% | 17/2927 |
-| headers_footers | 46.2% | 351/760 |
-| long_tiny_text | 39.8% | 176/442 |
-| multi_column | 66.5% | 588/884 |
+| headers_footers | 45.7% | 347/760 |
+| long_tiny_text | 41.0% | 181/442 |
+| multi_column | 68.6% | 606/884 |
 | old_scans | 13.3% | 70/526 |
 | old_scans_math | 0.0% | 0/458 |
-| table_tests | 50.7% | 518/1022 |
+| table_tests | 51.2% | 523/1022 |
 | baseline (the benchmark's sanity check) | 87.3% | 1217/1394 |
 
 Dataset revision `54a96a6fb6a2bd3b297e59869491db4d3625b711`, scorer revision `f7cfe4c22098b154c76b6ec950d1c0a464eecf8d`.
@@ -90,7 +90,7 @@ Reproduce:
 # Python 3.11 or newer, on Linux or macOS: the scorer looks outputs up by forward-slash paths,
 # so on Windows it finds none and every test fails
 git clone https://github.com/allenai/olmocr && git -C olmocr checkout f7cfe4c22098b154c76b6ec950d1c0a464eecf8d
-pip install -e "./olmocr[bench]" unpdf-markdown==0.43.0 huggingface_hub
+pip install -e "./olmocr[bench]" unpdf-markdown==0.50.0 huggingface_hub
 playwright install chromium
 python - <<'EOF'
 import pathlib, unpdf
@@ -106,4 +106,4 @@ EOF
 python -m olmocr.bench.benchmark --dir olmOCR-bench/bench_data --candidate unpdf --bootstrap_samples 200
 ```
 
-<!-- benchmark-data {"benchmarks": ["odl", "olmocr"], "odl": {"mhs": 0.831, "nid": 0.932, "overall": 0.903, "teds": 0.879}, "olmocr": {"categories": {"arxiv_math": 0.6, "baseline": 87.3, "headers_footers": 46.2, "long_tiny_text": 39.8, "multi_column": 66.5, "old_scans": 13.3, "old_scans_math": 0.0, "table_tests": 50.7}, "mean": 38.0}, "rank": [2, 20], "speed": {"ms_per_page": 19.5}, "version": "0.43.0"} -->
+<!-- benchmark-data {"benchmarks": ["odl", "olmocr"], "odl": {"mhs": 0.834, "nid": 0.932, "overall": 0.904, "teds": 0.88}, "olmocr": {"categories": {"arxiv_math": 0.6, "baseline": 87.3, "headers_footers": 45.7, "long_tiny_text": 41.0, "multi_column": 68.6, "old_scans": 13.3, "old_scans_math": 0.0, "table_tests": 51.2}, "mean": 38.4}, "rank": [2, 20], "speed": {"ms_per_page": 20.5}, "version": "0.50.0"} -->
