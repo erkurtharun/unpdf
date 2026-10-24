@@ -1731,7 +1731,10 @@ impl<'a> LayoutAnalyzer<'a> {
                             }
                             span.is_bold |= text_state.font_bold;
                             span.is_italic |= text_state.font_italic;
-                            span.is_monospace = text_state.font_fixed_pitch;
+                            // An invisible text layer's font is a stand-in, not the page's type:
+                            // OCR engines set theirs fixed-pitch (Tesseract's GlyphLessFont).
+                            span.is_monospace = text_state.font_fixed_pitch
+                                && text_state.params.render_mode != 3;
                             if let Some(width) = measured_width {
                                 span.width = width;
                                 span.width_measured = true;

@@ -73,6 +73,21 @@ fn a_monospace_name_alone_is_not_fixed_pitch() {
     );
 }
 
+/// An OCR layer is drawn invisibly (rendering mode 3) in the engine's stand-in font, which
+/// Tesseract declares fixed-pitch. That font says nothing about the page's type: its text is
+/// prose.
+#[test]
+fn an_invisible_text_layer_in_a_fixed_pitch_font_is_prose() {
+    let content = b"BT 3 Tr /F2 11 Tf 72 700 Td (This sentence continues) Tj ET         BT 3 Tr /F2 11 Tf 72 686 Td (on the following line.) Tj ET
+";
+    let md = markdown(&page(content, &flagged("GlyphLessFont")));
+    assert!(!md.contains("```"), "{md}");
+    assert!(
+        md.contains("This sentence continues on the following line."),
+        "{md}"
+    );
+}
+
 #[test]
 fn a_comment_only_line_does_not_swallow_the_next_statement() {
     let content = b"BT /F2 11 Tf 72 700 Td (// initialize the counter) Tj ET \

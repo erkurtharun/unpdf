@@ -18,6 +18,10 @@
   painted inside that clip shows through the letters (ISO 32000-1 §9.3.6). Such text was counted in
   `invisible_text_chars`, as if it were an OCR layer; it now counts as painted when something is
   painted before the graphics state that holds the clip is restored.
+- **An OCR text layer is prose, not code.** A searchable scan's invisible text layer (rendering mode
+  3) is drawn in the OCR engine's stand-in font, which Tesseract declares fixed-pitch, so whole
+  scanned pages were written as fenced code blocks. Fixed-pitch text counts as preformatted only when
+  it is painted.
 
 ## 0.49.0 — 2026-10-24
 
