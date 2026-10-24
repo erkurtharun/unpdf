@@ -767,9 +767,8 @@ fn find_best_vertical_gap(
         let center = (gap_left + gap_right) / 2.0;
         let (left, right): (Vec<Block>, Vec<Block>) =
             blocks.iter().partition(|b| b.x + b.width / 2.0 < center);
-        let side_join = config.min_gutter * SIDE_JOIN_GUTTERS;
-        if lines_of(&left, side_join).len() < GUTTER_MIN_SIDE_BLOCKS
-            || lines_of(&right, side_join).len() < GUTTER_MIN_SIDE_BLOCKS
+        if lines_of(&left, f32::INFINITY).len() < GUTTER_MIN_SIDE_BLOCKS
+            || lines_of(&right, f32::INFINITY).len() < GUTTER_MIN_SIDE_BLOCKS
         {
             return false;
         }

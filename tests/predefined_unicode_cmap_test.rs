@@ -355,3 +355,36 @@ fn a_run_under_a_vertical_cmap_advances_down_by_the_default_displacement() {
         assert!((column.x - 16.5).abs() < 0.01 && (next.x - 15.0).abs() < 0.01);
     }
 }
+
+#[test]
+fn a_line_shown_a_word_at_a_time_with_em_wide_spaces_is_one_paragraph() {
+    const SENTENCE: &str = "이 문서는 한국어 글꼴의 옛 코드를 읽는 시험입니다.";
+    const WORDS: [&str; 8] = [
+        "C0CC20",
+        "B9AEBCADB4C220",
+        "C7D1B1B9BEEE20",
+        "B1DBB2C3C0C720",
+        "BFBE20",
+        "C4DAB5E5B8A620",
+        "C0D0B4C220",
+        "BDC3C7E8C0D4B4CFB4D92E",
+    ];
+    let shows: Vec<String> = WORDS.iter().map(|word| format!("<{word}> Tj")).collect();
+    let content = format!("BT /F1 10 Tf 20 50 Td {} ET", shows.join(" "));
+    let doc = parse(&type0_pdf(
+        "KSC-EUC-H",
+        "Korea1",
+        false,
+        "",
+        content.as_bytes(),
+    ));
+    let paragraphs: Vec<String> = doc.pages[0]
+        .elements
+        .iter()
+        .map(|block| match block {
+            unpdf::Block::Paragraph(p) => p.plain_text(),
+            other => panic!("expected only paragraphs, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(paragraphs, [SENTENCE]);
+}

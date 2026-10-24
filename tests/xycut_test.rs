@@ -620,6 +620,23 @@ fn a_short_paragraph_drawn_word_by_word_is_not_two_columns() {
     assert_eq!(groups.len(), 1, "{groups:?}");
 }
 
+#[test]
+fn a_line_drawn_word_by_word_with_em_wide_spaces_is_not_two_columns() {
+    const BODY_10PT: XyCutConfig = XyCutConfig {
+        min_x_gap: 60.0,
+        min_y_gap: 36.0,
+        min_gutter: 5.0,
+    };
+    let mut blocks = Vec::new();
+    let mut x = 72.0;
+    for glyphs in [1.0, 3.0, 3.0, 3.0, 1.0, 3.0, 2.0, 6.0] {
+        blocks.push(make_block(x, 709.0, glyphs * 10.0, 10.0));
+        x += glyphs * 10.0 + 10.0;
+    }
+    let groups = xycut_segment(&blocks, &BODY_10PT);
+    assert_eq!(groups.len(), 1, "{groups:?}");
+}
+
 /// A byline centred under a title stands over the columns, not in the one below it. Its
 /// descent reaches below the top of the columns' first line, so no horizontal cut sets it
 /// apart; read as the middle column's first line it came after the whole left column.
