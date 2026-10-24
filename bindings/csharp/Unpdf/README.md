@@ -260,8 +260,7 @@ through Form XObjects count as the page's own; `FormOpCount` counts the form pai
 loss (empty when nothing was discarded). `Name` is the font's `/BaseFont`, or its resource
 name when it has none. `Reason` is `"composite_unresolved"` (a Type0/CID font whose codes
 map to no text), `"binary_density"` (a simple font whose decode was binary noise) or
-`"unmapped_codes"` (a font that draws glyphs for codes it gives no character, often on
-purpose); treat any other value as a generic "unreadable". The `Runs` sum to
+`"unmapped_codes"` (a font that draws glyphs for codes it gives no character, its text lost); treat any other value as a generic "unreadable". The `Runs` sum to
 `SuppressedTextRuns`.
 
 How well the page was read: `Rotation` (its `/Rotate`), `ImageCoverage` (share of the

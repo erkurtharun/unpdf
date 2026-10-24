@@ -436,7 +436,7 @@ def get_page_stats(
         ``"composite_unresolved"`` (a Type0/CID font whose codes map to no text),
         ``"binary_density"`` (a simple font whose decode was binary noise) or
         ``"unmapped_codes"`` (a font that draws glyphs for codes it gives no
-        character, often on purpose) — treat any other value as a generic
+        character, its text lost) — treat any other value as a generic
         "unreadable". The ``runs`` sum to ``suppressed_text_runs``.
 
         How the page was read: ``rotation`` (the page's ``/Rotate``, degrees

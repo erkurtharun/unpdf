@@ -648,11 +648,14 @@ pub enum TextSuppression {
     /// this one is a heuristic and can in principle be wrong in either direction.
     BinaryDensity,
     /// A simple font that draws its own glyphs (a Type 3 font, or one that embeds its
-    /// program) for control codes nothing gives a character: no base encoding assigns them
-    /// one, and neither its `/ToUnicode`, its `/Encoding` nor its program does.
+    /// program) for control codes nothing read gives a character: no base encoding assigns
+    /// them one, and neither its `/ToUnicode`, its `/Encoding` nor -- for a Type 1 or CFF
+    /// program -- the program's built-in encoding does. An embedded TrueType program's
+    /// `post` names and `cmap` are not consulted.
     ///
-    /// Often deliberate, as for a glyph standing for part of a cluster another code's
-    /// mapping already spells out; either way, unlike [`Self::BinaryDensity`], no misread.
+    /// Sometimes deliberate, as for a glyph standing for part of a cluster another code's
+    /// mapping already spells out; sometimes text this crate cannot recover. Either way,
+    /// unlike [`Self::BinaryDensity`], nothing was misread -- and the text is lost.
     UnmappedCodes,
 }
 
