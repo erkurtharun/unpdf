@@ -30,3 +30,13 @@ fn test_reorder_bidi_arabic() {
     let result = bidi::reorder_bidi("مرحبا");
     assert!(!result.is_empty());
 }
+
+#[test]
+fn test_reorder_bidi_mirrors_brackets_in_rtl_run() {
+    assert_eq!(bidi::reorder_bidi("ج (ب) ا"), "ا (ب) ج");
+}
+
+#[test]
+fn test_reorder_bidi_keeps_brackets_in_ltr_run() {
+    assert_eq!(bidi::reorder_bidi("abc (d) ج"), "abc (d) ج");
+}

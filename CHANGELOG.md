@@ -22,6 +22,11 @@
   counted as lines of their own. A sentence in a CJK font whose space takes `/DW` 1000, shown one
   word per `Tj`, was cut at a space into two columns and read as two paragraphs. The lines beside
   a gutter are now counted by baseline. (#19, @erkurtharun)
+- **Brackets in right-to-left text face the right way.** A right-to-left run is drawn with each
+  mirrored character as its mirror image (UAX #9 rule L4), so a `(` written in Arabic or Hebrew
+  text is painted as `)`. Reordering such a line back to logical order reversed the run but kept
+  the painted characters, and `(12)` came out as `)12(`. Each character of a reversed run is
+  mapped to its `Bidi_Mirroring_Glyph`. (#14, @erkurtharun)
 
 ## 0.48.0 — 2026-10-20
 
