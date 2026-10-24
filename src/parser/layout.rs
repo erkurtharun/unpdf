@@ -43,6 +43,8 @@ pub struct TextSpan {
     pub is_italic: bool,
     /// Whether a rule is drawn through the run's text, as a strike-out is
     pub is_struck: bool,
+    /// Whether the run is set in a fixed-pitch font, every glyph the same width.
+    pub is_monospace: bool,
     /// The direction its baseline runs on the page, a unit vector: `[1.0, 0.0]` for text read
     /// left to right ([`TextSpan::LEFT_TO_RIGHT`]), `[0.0, 1.0]` for text turned to read up the
     /// page. A run read along any other direction is one line of its own, placed by the box it
@@ -113,6 +115,7 @@ impl TextSpan {
             is_bold,
             is_italic,
             is_struck: false,
+            is_monospace: false,
             direction: Self::LEFT_TO_RIGHT,
             letter_spacing: 0.0,
         }
@@ -159,6 +162,17 @@ pub struct TextLine {
     pub is_heading: bool,
     /// Detected heading level (1-6, or 0 for non-heading)
     pub heading_level: u8,
+}
+
+/// Whether every run of `line` with text in it is set in a fixed-pitch font
+/// ([`TextSpan::is_monospace`]): a line of preformatted text, such as a program's. A
+/// fixed-pitch word inside a proportional line does not make it one.
+pub(super) fn is_monospaced_line(line: &TextLine) -> bool {
+    let mut spans = line
+        .spans
+        .iter()
+        .filter(|span| !span.text.trim().is_empty());
+    spans.next().is_some_and(|s| s.is_monospace) && spans.all(|s| s.is_monospace)
 }
 
 /// The pitch of the lines around the gap above line `i`: the smallest of the two spacings before
@@ -1201,6 +1215,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         name: fi.base_font,
                         bold: fi.bold,
                         italic: fi.italic,
+                        fixed_pitch: fi.fixed_pitch,
                     },
                 )
             })
@@ -1455,6 +1470,7 @@ impl<'a> LayoutAnalyzer<'a> {
                         };
                         text_state.font_bold = info.is_some_and(|info| info.bold);
                         text_state.font_italic = info.is_some_and(|info| info.italic);
+                        text_state.font_fixed_pitch = info.is_some_and(|info| info.fixed_pitch);
                     }
                 }
                 // `'` and `"` have already moved to the next line, and `"` set its spacing.
@@ -1712,6 +1728,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             }
                             span.is_bold |= text_state.font_bold;
                             span.is_italic |= text_state.font_italic;
+                            span.is_monospace = text_state.font_fixed_pitch;
                             if let Some(width) = measured_width {
                                 span.width = width;
                                 span.width_measured = true;
@@ -2318,6 +2335,27 @@ impl<'a> LayoutAnalyzer<'a> {
             return true;
         }
 
+        // Lines of preformatted text are not prose to be joined: joining them can put the next
+        // statement inside a preceding `//` comment. A listing is one block while its lines
+        // follow at about one pitch, a blank source line or so included; the pitch is bounded by
+        // the type size so a large gap elsewhere on the page cannot widen it.
+        let previous_code = is_monospaced_line(prev_line);
+        let current_code = is_monospaced_line(curr_line);
+        if previous_code || current_code {
+            let size = prev_line.font_size.abs().max(curr_line.font_size.abs());
+            let pitch = local_pitch.unwrap_or(avg_spacing);
+            let pitch = if size > 0.0 {
+                pitch.clamp(size, size * 1.5)
+            } else {
+                pitch
+            };
+            return previous_code != current_code
+                || (prev_line.font_size.abs() - curr_line.font_size.abs()).abs() >= 2.0
+                || (prev_line.x - curr_line.x).abs() > size * 12.0
+                || prev_line.y - curr_line.y <= 0.0
+                || prev_line.y - curr_line.y > pitch * 2.25;
+        }
+
         // A list marker (bullet or "N."/"N)") always opens a new item — never
         // silently merge it into whatever block precedes it, the way the
         // indentation tolerance below deliberately merges a wrapped item's
@@ -2695,6 +2733,8 @@ struct FontInfo {
     bold: bool,
     /// The font declares itself italic, whatever its name says.
     italic: bool,
+    /// Every glyph of the font has the same width (see [`super::backend::BackendFontInfo`]).
+    fixed_pitch: bool,
 }
 
 /// The text-related parameters of the graphics state (ISO 32000-1 §9.3).
@@ -2708,6 +2748,8 @@ struct TextState {
     font_bold: bool,
     /// The font declares itself italic (descriptor), whatever its name says.
     font_italic: bool,
+    /// The font declares every glyph the same width.
+    font_fixed_pitch: bool,
     /// The rest of the text state.
     params: super::text_state::TextParams,
 }
@@ -5077,6 +5119,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 is_struck: false,
+                is_monospace: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
                 letter_spacing: 0.0,
             })
@@ -5103,6 +5146,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 is_struck: false,
+                is_monospace: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
                 letter_spacing: 0.0,
             },
@@ -5118,6 +5162,7 @@ mod tests {
                 is_bold: false,
                 is_italic: false,
                 is_struck: false,
+                is_monospace: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
                 letter_spacing: 0.0,
             },

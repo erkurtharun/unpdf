@@ -232,6 +232,7 @@ impl BlockRenderer {
             }
             Block::HorizontalRule => "\n---\n\n".to_string(),
             Block::PageBreak | Block::SectionBreak => "\n\n".to_string(),
+            Block::Code { content } => format!("{}\n\n", super::syntax::fenced_code(content)),
             Block::Raw { content } => format!("{}\n\n", content),
         }
     }

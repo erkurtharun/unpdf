@@ -15,6 +15,17 @@
   text runs that are only whitespace; `fill_op_count`, path-filling operators, as when glyphs are
   drawn as filled outlines. All are in `Page`, the JSON output and the page stats of the C ABI,
   .NET (`PageStats`) and Python bindings. (#13, @erkurtharun)
+- **Breaking: preformatted text is a code block.** A block whose every line is set in a
+  fixed-pitch font -- one whose descriptor declares FixedPitch (ISO 32000-1 §9.8.2), whose
+  `/Widths` give every glyph one advance, or the standard font Courier -- is now
+  `Block::Code { content }`: its lines as printed, indented by their offset from the block's
+  left edge, with no joining into prose. A line comment no longer swallows the next statement
+  (`int a; // test int b;`). Markdown writes it as a fenced code block whose fence no backtick
+  run in it can close, and Markdown clean-up leaves fenced code as it is; plain text carries its
+  lines with no fence, and `Page::plain_text` now reads every block's text, code and raw blocks
+  included. A fixed-pitch word inside a proportional line changes nothing. `Block` gains the
+  variant, `TextSpan` gains `is_monospace`, and `BackendFontInfo` gains `fixed_pitch`.
+  (based on #10, @LucaCiucci)
 
 ### Changed
 

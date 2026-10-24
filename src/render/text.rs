@@ -1,7 +1,7 @@
 //! Plain text rendering for PDF documents.
 
 use crate::error::Result;
-use crate::model::Document;
+use crate::model::{Block, Document};
 
 use super::{CleanupPipeline, RenderOptions};
 
@@ -12,21 +12,44 @@ use super::{CleanupPipeline, RenderOptions};
 /// [`PageSelection::check`](super::PageSelection::check).
 pub fn to_text(doc: &Document, options: &RenderOptions) -> Result<String> {
     options.page_selection.check_document(doc)?;
-    let mut output = doc
+    let pages = doc
         .pages
         .iter()
-        .filter(|page| options.page_selection.includes(page.number))
-        .map(|page| page.plain_text())
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        .filter(|page| options.page_selection.includes(page.number));
+    let Some(ref cleanup_options) = options.cleanup else {
+        let output = pages.map(|page| page.plain_text()).collect::<Vec<_>>();
+        return Ok(output.join("\n\n").trim().to_string());
+    };
 
-    // Apply cleanup if configured
-    if let Some(ref cleanup_options) = options.cleanup {
-        let pipeline = CleanupPipeline::new(cleanup_options.clone());
-        output = pipeline.process(&output);
+    // Clean-up joins and rewrites prose; a code block's lines are literal. So the text is
+    // cleaned a run of prose blocks at a time, and each code block is passed through as is.
+    let pipeline = CleanupPipeline::new(cleanup_options.clone());
+    let mut parts: Vec<String> = Vec::new();
+    let mut prose: Vec<String> = Vec::new();
+    let flush = |prose: &mut Vec<String>, parts: &mut Vec<String>| {
+        if !prose.is_empty() {
+            let cleaned = pipeline.process(&prose.join("\n\n"));
+            prose.clear();
+            if !cleaned.trim().is_empty() {
+                parts.push(cleaned.trim().to_string());
+            }
+        }
+    };
+    for block in pages.flat_map(|page| page.elements.iter()) {
+        let mut text = String::new();
+        block.append_plain_text(&mut text);
+        if text.is_empty() {
+            continue;
+        }
+        if matches!(block, Block::Code { .. }) {
+            flush(&mut prose, &mut parts);
+            parts.push(text);
+        } else {
+            prose.push(text);
+        }
     }
-
-    Ok(output.trim().to_string())
+    flush(&mut prose, &mut parts);
+    Ok(parts.join("\n\n").trim().to_string())
 }
 
 #[cfg(test)]

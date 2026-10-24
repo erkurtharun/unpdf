@@ -191,6 +191,10 @@ impl MarkdownRenderer {
                     output.push_str("\n\n");
                 }
             }
+            Block::Code { content } => {
+                output.push_str(&super::syntax::fenced_code(content));
+                output.push_str("\n\n");
+            }
             Block::Raw { content } => {
                 output.push_str(content);
                 output.push_str("\n\n");

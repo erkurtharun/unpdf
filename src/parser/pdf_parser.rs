@@ -470,6 +470,70 @@ fn get_page_dimensions_fn(backend: &dyn PdfBackend, page_num: u32) -> Result<(f3
     Ok(backend.page_dimensions(*page_id))
 }
 
+/// Whether every line of `block` is set in a fixed-pitch font: preformatted text, read as
+/// printed rather than as prose. A list item or paragraph of such lines is code all the same
+/// (`- x` and `1.` open lines of programs too); a heading stays a heading.
+fn is_code_block(block: &super::layout::TextBlock) -> bool {
+    !block.lines.is_empty() && block.lines.iter().all(super::layout::is_monospaced_line)
+}
+
+/// `block`'s lines as a [`Block::Code`]: each line's text, indented by the spaces its offset
+/// from the block's left edge amounts to at the line's own character width, with blank lines
+/// where a gap of more than a line pitch (at most two) stood between two lines.
+fn code_block(block: &super::layout::TextBlock) -> Block {
+    let lines = &block.lines;
+    let left = lines
+        .iter()
+        .map(|line| line.x)
+        .fold(f32::INFINITY, f32::min);
+    let size = lines[0].font_size.abs();
+    let pitch = lines
+        .windows(2)
+        .map(|pair| (pair[0].y - pair[1].y).abs())
+        .filter(|gap| *gap > 0.0)
+        .min_by(f32::total_cmp)
+        .unwrap_or(size * 1.4);
+    let pitch = if size > 0.0 {
+        pitch.clamp(size, size * 1.5)
+    } else {
+        pitch
+    };
+    let content = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            // One character's advance: a fixed-pitch run's width over its characters.
+            let advance = line
+                .spans
+                .iter()
+                .filter(|span| !span.text.is_empty() && span.width > 0.0)
+                .map(|span| span.width / span.text.chars().count() as f32)
+                .next()
+                .unwrap_or(line.font_size.abs() * 0.6);
+            let indent = if advance > 0.0 {
+                ((line.x - left) / advance).round().clamp(0.0, 256.0) as usize
+            } else {
+                0
+            };
+            let blank_lines = match i {
+                0 => 0,
+                _ if pitch > 0.0 => (((lines[i - 1].y - line.y).abs() / pitch).round() as usize)
+                    .saturating_sub(1)
+                    .min(2),
+                _ => 0,
+            };
+            format!(
+                "{}{}{}",
+                "\n".repeat(blank_lines),
+                " ".repeat(indent),
+                line.text()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Block::Code { content }
+}
+
 /// Build the `Paragraph` for a `BlockType::ListItem` block: the marker-stripped
 /// text, carrying an ordered or unordered `ListInfo` per the block's detected
 /// marker. Nesting level is always 0 — `layout::detect_list_marker` reads a
@@ -1040,6 +1104,7 @@ fn extract_page_with_tables_fn(
                             let level = block.heading_level.clamp(1, 6);
                             Block::Paragraph(Paragraph::heading(text_of_block, level))
                         }
+                        _ if is_code_block(&block) => code_block(&block),
                         super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
                             Block::Paragraph(styled_paragraph(&block))
                         }
@@ -1084,6 +1149,7 @@ fn extract_page_with_tables_fn(
                         let level = block.heading_level.clamp(1, 6);
                         Block::Paragraph(Paragraph::heading(text, level))
                     }
+                    _ if is_code_block(&block) => code_block(&block),
                     super::layout::BlockType::Paragraph | super::layout::BlockType::Unknown => {
                         Block::Paragraph(styled_paragraph(&block))
                     }

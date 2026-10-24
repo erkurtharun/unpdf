@@ -364,6 +364,14 @@ pub(super) fn escape_markdown(text: &str) -> String {
     markdown::escape_html_syntax(&result)
 }
 
+/// `content` as a fenced code block: a fence of backticks longer than any run of backticks in
+/// it, so no line of the code closes it (CommonMark §4.5).
+pub(crate) fn fenced_code(content: &str) -> String {
+    let longest = content.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat((longest + 1).max(3));
+    format!("{fence}\n{content}\n{fence}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

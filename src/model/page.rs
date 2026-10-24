@@ -249,10 +249,10 @@ impl Page {
     pub fn plain_text(&self) -> String {
         self.elements
             .iter()
-            .filter_map(|block| match block {
-                Block::Paragraph(p) => Some(p.plain_text()),
-                Block::Table(t) => Some(t.plain_text()),
-                _ => None,
+            .filter_map(|block| {
+                let mut text = String::new();
+                block.append_plain_text(&mut text);
+                (!text.is_empty()).then_some(text)
             })
             .collect::<Vec<_>>()
             .join("\n\n")
@@ -320,6 +320,15 @@ pub enum Block {
     /// A section break marker
     SectionBreak,
 
+    /// Preformatted text set in a fixed-pitch font, such as a program listing: its lines as
+    /// printed, each indented by the spaces its offset from the block's left edge amounts to,
+    /// with no joining, escaping or clean-up. The Markdown renderer writes it as a fenced code
+    /// block; plain text and JSON carry the lines as they are.
+    Code {
+        /// The lines, joined by `\n`.
+        content: String,
+    },
+
     /// Raw/unstructured content
     Raw {
         /// Raw content text
@@ -331,13 +340,13 @@ impl Block {
     /// Append the plain-text representation of this block to `out`.
     ///
     /// Produces the same text as calling `plain_text()` on the underlying
-    /// variant (Paragraph / Table / etc.).  The pragmatic fallback delegates
-    /// to the existing `plain_text()` helpers to keep the diff minimal.
+    /// variant (Paragraph / Table / etc.); a code or raw block contributes its content as it
+    /// is. [`Page::plain_text`] reads every block through this.
     pub fn append_plain_text(&self, out: &mut String) {
         match self {
             Block::Paragraph(p) => out.push_str(&p.plain_text()),
             Block::Table(t) => out.push_str(&t.plain_text()),
-            Block::Raw { content } => out.push_str(content),
+            Block::Code { content } | Block::Raw { content } => out.push_str(content),
             // Image, HorizontalRule, PageBreak, SectionBreak contribute no text.
             _ => {}
         }

@@ -113,6 +113,9 @@ pub struct BackendFontInfo {
     /// Whether the font declares itself italic — by its descriptor's `/ItalicAngle` or
     /// `/Flags` Italic — whatever its name says.
     pub italic: bool,
+    /// Whether every glyph of the font has the same width: its descriptor's `/Flags`
+    /// FixedPitch (ISO 32000-1 §9.8.2), or the standard font Courier, which needs none.
+    pub fixed_pitch: bool,
 }
 
 /// A value from a PDF content stream operand.
@@ -2605,6 +2608,7 @@ impl RawBackend {
 struct DeclaredStyle {
     bold: bool,
     italic: bool,
+    fixed_pitch: bool,
 }
 
 /// A font's identity, under which what is read from it is cached.
@@ -3514,6 +3518,8 @@ impl RawFontResolver {
                     .map(|v| doc.resolve(v))
                     .and_then(|v| v.as_f32())
             };
+            // ISO 32000-1 §9.8.2, table 123: bit 1 FixedPitch, bit 7 Italic, bit 19 ForceBold.
+            const FIXED_PITCH: i64 = 1 << 0;
             const ITALIC: i64 = 1 << 6;
             const FORCE_BOLD: i64 = 1 << 18;
             let flags = number(b"Flags").map_or(0, |f| f as i64);
@@ -3531,7 +3537,11 @@ impl RawFontResolver {
                         os2_weight_class(&data).is_some_and(|w| w >= 600)
                     }
                 });
-            Some(DeclaredStyle { bold, italic })
+            Some(DeclaredStyle {
+                bold,
+                italic,
+                fixed_pitch: flags & FIXED_PITCH != 0 || has_uniform_widths(doc, font.dict),
+            })
         })()
         .unwrap_or_default();
         self.style_cache
@@ -3560,11 +3570,14 @@ impl RawFontResolver {
                     .map(|n| String::from_utf8_lossy(n).to_string())
                     .unwrap_or_else(|| "Unknown".to_string());
                 let style = self.declared_style(doc, &font);
+                // The standard 14 fonts need no descriptor; of them, Courier is fixed-pitch.
+                let fixed_pitch = style.fixed_pitch || is_standard_courier(&base_font);
                 result.push(BackendFontInfo {
                     name: name.clone(),
                     base_font,
                     bold: style.bold,
                     italic: style.italic,
+                    fixed_pitch,
                 });
             }
         }
@@ -3575,6 +3588,40 @@ impl RawFontResolver {
 // ---------------------------------------------------------------------------
 // RawBackend helper functions
 // ---------------------------------------------------------------------------
+
+/// Whether a simple font's `/Widths` gives every glyph it draws the same advance -- fixed
+/// pitch by definition, whether or not the descriptor's flag says so. Too few glyphs to tell
+/// (fewer than ten with a width) is not fixed pitch.
+fn has_uniform_widths(doc: &RawDocument, font: &RawPdfDict) -> bool {
+    let Some(widths) = raw_dict_get(font, b"Widths").and_then(|w| doc.resolve(w).as_array()) else {
+        return false;
+    };
+    let mut drawn = widths
+        .iter()
+        .filter_map(|w| doc.resolve(w).as_f32())
+        .filter(|w| *w > 0.0);
+    let Some(first) = drawn.next() else {
+        return false;
+    };
+    let mut count = 1;
+    for w in drawn {
+        if (w - first).abs() > 0.5 {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 10
+}
+
+/// Whether `base_font` names a standard Courier face (ISO 32000-1 §9.6.2.2), with or without
+/// a subset tag (`ABCDEF+Courier`).
+fn is_standard_courier(base_font: &str) -> bool {
+    let name = base_font.split_once('+').map_or(base_font, |(_, n)| n);
+    matches!(
+        name,
+        "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique"
+    )
+}
 
 /// Resolve a PdfObject to a dictionary reference (following references).
 fn raw_resolve_dict<'a>(doc: &'a RawDocument, obj: &'a RawPdfObject) -> Option<&'a RawPdfDict> {
