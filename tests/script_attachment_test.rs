@@ -75,13 +75,36 @@ fn a_superscript_in_lines_set_over_two_columns_stays_on_its_line() {
     assert!(left < right, "columns interleaved: {text:?}");
 }
 
-/// A script folded into its line is still written as one.
+/// A script folded into its line keeps its script style in the model, and Markdown writes
+/// its text as the line's, unmarked.
 #[test]
 fn a_folded_script_keeps_its_script_style() {
     let doc = PdfParser::from_bytes(&common::scripted_lines_pdf())
         .and_then(|p| p.parse())
         .expect("synthetic PDF should parse");
+    let runs: Vec<_> = doc
+        .pages
+        .iter()
+        .flat_map(|page| page.elements.iter())
+        .filter_map(|block| match block {
+            unpdf::model::Block::Paragraph(p) => Some(p),
+            _ => None,
+        })
+        .flat_map(|p| p.content.iter())
+        .filter_map(|inline| match inline {
+            unpdf::model::InlineContent::Text(run) => Some(run),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        runs.iter().any(|r| r.text == "4" && r.style.subscript),
+        "{runs:?}"
+    );
+    assert!(
+        runs.iter().any(|r| r.text == "[35]" && r.style.superscript),
+        "{runs:?}"
+    );
     let md = to_markdown(&doc, &RenderOptions::default()).expect("markdown renders");
-    assert!(md.contains("precursor to C<sub>4</sub>"), "{md:?}");
-    assert!(md.contains(r"own right.<sup>\[35\]</sup>"), "{md:?}");
+    assert!(md.contains("precursor to C4"), "{md:?}");
+    assert!(!md.contains("<sup>") && !md.contains("<sub>"), "{md:?}");
 }

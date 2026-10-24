@@ -79,13 +79,14 @@
   lacks a glyph (LibreOffice for U+1D11E in Liberation Serif) leaves its advance blank in a TJ
   array and draws it in another font afterwards; the glyph read after the whole run. A run is split
   at a blank that a run drawn later on its baseline fills. (#17, @erkurtharun)
-- **Superscripts and subscripts keep their style.** A PDF's text runs carried bold and italic
-  only, so a footnote mark, a citation or the `2` of `CO2` came out as plain text. A run set no
-  larger than nine tenths of its line and raised by a seventh of the line's size or lowered by a
-  tenth -- within the six tenths a script may move, the same bounds the reading order folds a
-  script line into its owner by -- is written as a superscript or a subscript. The numerator of
-  a fraction stacked inline reads as a superscript. A line of punctuation set in script markup
-  is still dropped as punctuation only. (based on #12, @erkurtharun)
+- **Superscripts and subscripts are kept in the model.** A run set no larger than nine tenths of
+  its line and raised by a seventh of the line's size or lowered by a tenth -- within the six
+  tenths a script may move, the same bounds the reading order folds a script line into its owner
+  by -- carries `superscript` or `subscript` in its `TextStyle`, so the JSON output says which
+  text is a footnote mark, an exponent or an index. Markdown writes a script's text as the
+  line's, unmarked: a script is read off the geometry, not stated by the PDF, and `<sup>`/`<sub>`
+  split words every reference reader extracts whole (`S<sub>K</sub>` for `SK`), which both public
+  benchmarks score as lost text. (based on #12, @erkurtharun)
 - **Struck text keeps its strike-out.** A run a `/StrikeOut` annotation covers (ISO 32000-1
   §12.5.6.10) is written struck through, and so is a run a rule is drawn through the way a
   strike-out is set: a sixth to a half of its size above the baseline, starting with its ink and

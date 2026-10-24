@@ -54,14 +54,14 @@ pub(super) fn apply_text_style(
     before: Option<char>,
     after: Option<char>,
 ) -> String {
+    let style = &written_style(style);
     if !style.has_styling() {
         return text.to_string();
     }
 
     // The delimiters land against the neighbours only when nothing is wrapped around them;
     // inside a tag they touch `>` and `<`, which CommonMark always accepts.
-    let outer_delimiter = (style.bold || style.italic || style.strikethrough)
-        && !(style.superscript || style.subscript || style.underline);
+    let outer_delimiter = (style.bold || style.italic || style.strikethrough) && !style.underline;
     let span = if outer_delimiter {
         emphasis_span(text, before, after)
     } else {
@@ -85,12 +85,6 @@ pub(super) fn apply_text_style(
     }
     if style.bold {
         styled = format!("**{}**", styled);
-    }
-    if style.superscript {
-        styled = format!("<sup>{}</sup>", styled);
-    }
-    if style.subscript {
-        styled = format!("<sub>{}</sub>", styled);
     }
     if style.underline {
         styled = format!("<u>{}</u>", styled);
@@ -142,8 +136,53 @@ fn push_body(output: &mut String, content: &[InlineContent], options: &RenderOpt
     output.push_str(&markdown::escape_block_starts(&body));
 }
 
+/// The part of `style` Markdown writes.
+///
+/// A PDF says nothing of scripts: a superscript or subscript is read off the geometry of a
+/// smaller, raised or lowered run, and the model keeps that reading (the JSON output carries
+/// it). Written into the text as `<sup>`/`<sub>` it splits words that every reference reader
+/// extracts whole -- `S<sub>K</sub>` for `SK`, `기준금리<sup>1)</sup>` -- and both public
+/// benchmarks this crate is measured on lose matches by it. So Markdown writes a script's text
+/// as the line's.
+fn written_style(style: &TextStyle) -> TextStyle {
+    TextStyle {
+        superscript: false,
+        subscript: false,
+        ..style.clone()
+    }
+}
+
+/// The marks Markdown writes for `style` -- what two runs must share to be written as one.
+fn written_marks(style: &TextStyle) -> (bool, bool, bool, bool) {
+    (
+        style.bold,
+        style.italic,
+        style.underline,
+        style.strikethrough,
+    )
+}
+
+/// `content` with each run of text joined to the one before it when Markdown writes both the
+/// same way: an italic `c` and an italic subscript `p` are one italic `cp`, not `*c**p*`, which
+/// CommonMark does not read as two emphases.
+fn coalesce_written_runs(content: &[InlineContent]) -> Vec<InlineContent> {
+    let mut out: Vec<InlineContent> = Vec::with_capacity(content.len());
+    for item in content {
+        if let (InlineContent::Text(run), Some(InlineContent::Text(last))) = (item, out.last_mut())
+        {
+            if written_marks(&run.style) == written_marks(&last.style) {
+                last.text.push_str(&run.text);
+                continue;
+            }
+        }
+        out.push(item.clone());
+    }
+    out
+}
+
 /// Append a paragraph's inline content.
 fn push_inline_content(output: &mut String, content: &[InlineContent], options: &RenderOptions) {
+    let content = &coalesce_written_runs(content);
     for (i, item) in content.iter().enumerate() {
         match item {
             InlineContent::Text(run) => {
@@ -424,14 +463,50 @@ mod tests {
 
     #[test]
     fn test_apply_text_style_leaves_html_styles_alone() {
-        let sup = TextStyle {
-            superscript: true,
+        let underline = TextStyle {
+            underline: true,
             ..TextStyle::default()
         };
         assert_eq!(
-            apply_text_style(",1", &sup, Some('a'), Some('b')),
-            "<sup>,1</sup>"
+            apply_text_style(",1", &underline, Some('a'), Some('b')),
+            "<u>,1</u>"
         );
+    }
+
+    #[test]
+    fn an_italic_script_joins_the_italic_text_beside_it() {
+        let run = |text: &str, subscript: bool| {
+            InlineContent::Text(crate::model::TextRun {
+                text: text.to_string(),
+                style: TextStyle {
+                    italic: true,
+                    subscript,
+                    ..TextStyle::default()
+                },
+            })
+        };
+        let mut out = String::new();
+        push_inline_content(
+            &mut out,
+            &[run("c", false), run("p", true), run("h", false)],
+            &RenderOptions::default(),
+        );
+        assert_eq!(out, "*cph*");
+    }
+
+    #[test]
+    fn a_script_is_written_as_its_text() {
+        let sup = TextStyle {
+            superscript: true,
+            italic: true,
+            ..TextStyle::default()
+        };
+        assert_eq!(apply_text_style("p", &sup, Some('h'), None), "*p*");
+        let sub = TextStyle {
+            subscript: true,
+            ..TextStyle::default()
+        };
+        assert_eq!(apply_text_style("K", &sub, Some('S'), None), "K");
     }
 
     #[test]
