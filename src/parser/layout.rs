@@ -1565,7 +1565,9 @@ impl<'a> LayoutAnalyzer<'a> {
                         let mut first_glyph = true;
                         let mut gaps: Vec<(usize, usize, Shift, Option<Shift>, Shift)> = Vec::new();
                         let mut gap_opened: Option<(usize, Shift, Option<Shift>)> = None;
+                        // What the run lost is counted once the clip is known to show it.
                         let mut suppressions = Vec::new();
+                        let mut undecoded_codes = 0u32;
                         for item in items {
                             match item {
                                 PdfValue::Str(bytes) => {
@@ -1576,7 +1578,7 @@ impl<'a> LayoutAnalyzer<'a> {
                                         bytes,
                                     );
                                     suppressions.extend(decoded.suppressed);
-                                    undecoded_text_codes += decoded.undecoded_codes;
+                                    undecoded_codes += decoded.undecoded_codes;
                                     if let Some(room) = room.take() {
                                         maybe_insert_space_tj(&mut text, room - letter_room);
                                     }
@@ -1712,6 +1714,7 @@ impl<'a> LayoutAnalyzer<'a> {
                             }
                             continue;
                         }
+                        undecoded_text_codes += undecoded_codes;
                         for reason in suppressions {
                             note_suppression(
                                 reason,

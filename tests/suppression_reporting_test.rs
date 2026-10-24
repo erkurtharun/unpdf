@@ -421,6 +421,17 @@ fn an_advancing_code_a_composite_font_leaves_out_is_counted_as_undecoded() {
     assert_eq!(json["undecoded_text_codes"], 1);
 }
 
+/// A code left out of a run the page box hides is not lost text either: like the
+/// run's suppression, it is counted only where the run shows.
+#[test]
+fn a_code_left_out_of_a_run_the_page_hides_is_not_counted() {
+    let (_, page) = parsed_page(&partially_mapped_composite_pdf(
+        "1000 1000 Td <00010002000300040200> Tj",
+    ));
+    assert_eq!(page.undecoded_text_codes, 0);
+    assert_eq!(page.clipped_text_runs, 1);
+}
+
 #[test]
 fn a_kerned_string_of_codes_left_out_is_judged_by_each_element() {
     use unpdf::parser::backend::TextSuppression;

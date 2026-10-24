@@ -8,6 +8,9 @@
   read was counted in `suppressed_text_runs` and `unreadable_fonts` even when the clipping path
   or the page box hid it entirely, so a page could report a loss of text it never shows. Only
   the runs the clip shows are counted now. (#21, @erkurtharun)
+- **A code left out of a hidden run is not counted as undecoded.** `undecoded_text_codes` counted
+  the codes of runs the clipping path or the page box hid entirely; like a run's suppression, it
+  now counts only the runs the clip shows.
 
 ## 0.50.0 — 2026-10-24
 
