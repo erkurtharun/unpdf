@@ -75,6 +75,12 @@
   script line into its owner by -- is written as a superscript or a subscript. The numerator of
   a fraction stacked inline reads as a superscript. A line of punctuation set in script markup
   is still dropped as punctuation only. (based on #12, @erkurtharun)
+- **Struck text keeps its strike-out.** A run a `/StrikeOut` annotation covers (ISO 32000-1
+  §12.5.6.10) is written struck through, and so is a run a rule is drawn through the way a
+  strike-out is set: a sixth to a half of its size above the baseline, starting with its ink and
+  ending with its ink or its trailing space, crossing no column gap. A rule that runs on past the
+  text -- a chart's line through a label, a frame -- strikes nothing. Tagged PDF's
+  `TextDecorationType` is not read. (based on #12, @erkurtharun)
 
 ## 0.48.0 — 2026-10-20
 

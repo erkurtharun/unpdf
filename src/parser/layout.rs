@@ -41,6 +41,8 @@ pub struct TextSpan {
     pub is_bold: bool,
     /// Whether the font appears to be italic
     pub is_italic: bool,
+    /// Whether a rule is drawn through the run's text, as a strike-out is
+    pub is_struck: bool,
     /// The direction its baseline runs on the page, a unit vector: `[1.0, 0.0]` for text read
     /// left to right ([`TextSpan::LEFT_TO_RIGHT`]), `[0.0, 1.0]` for text turned to read up the
     /// page. A run read along any other direction is one line of its own, placed by the box it
@@ -110,6 +112,7 @@ impl TextSpan {
             font_name,
             is_bold,
             is_italic,
+            is_struck: false,
             direction: Self::LEFT_TO_RIGHT,
             letter_spacing: 0.0,
         }
@@ -1793,8 +1796,11 @@ impl<'a> LayoutAnalyzer<'a> {
         facts.ruled_tables = 0;
         self.page_facts.set(facts);
 
+        let mut spans = split_runs_at_filled_gaps(spans, run_gaps);
+        mark_annotated_strike_outs(&mut spans, &self.backend.struck_out_areas(page_id));
+        mark_struck_runs(&mut spans, &ruling_lines);
         Ok((
-            join_rotated_runs(split_runs_at_filled_gaps(spans, run_gaps)),
+            join_rotated_runs(spans),
             signals,
             PageRulings {
                 grids: lattice_grids,
@@ -2716,6 +2722,89 @@ fn run_bounds(origin: (f32, f32), end: Option<(f32, f32)>, size: f32) -> Bounds 
         y0: b.y0 - size * 0.3,
         y1: b.y1 + size,
         ..b
+    }
+}
+
+/// Mark the runs a strike-out annotation covers: a run whose ink, at half its size above the
+/// baseline, lies at least half inside one of `areas` across.
+///
+/// The annotation is the document stating the strike-out (ISO 32000-1 §12.5.6.10), so it is read
+/// before the drawn rules [`mark_struck_runs`] infers one from. A run is marked whole, as a run
+/// is the unit of style here.
+fn mark_annotated_strike_outs(spans: &mut [TextSpan], areas: &[super::backend::PageBox]) {
+    if areas.is_empty() {
+        return;
+    }
+    for span in spans.iter_mut().filter(|s| !s.is_rotated()) {
+        let (left, right) = span.ink_extent();
+        if right <= left {
+            continue;
+        }
+        let middle = span.y + span.font_size.abs() / 2.0;
+        span.is_struck |= areas.iter().any(|a| {
+            let covered = right.min(a.urx) - left.max(a.llx);
+            (a.lly..=a.ury).contains(&middle) && covered >= (right - left) / 2.0
+        });
+    }
+}
+
+/// Mark the runs a horizontal rule is struck through: one between a sixth and a half of their
+/// size above their baseline (under the x-height's top, over an underline's place) that crosses
+/// their ink by more than a fifth of an em, starts with it and ends with it or with the advance
+/// of the last run's trailing space, to within a fifth of an em, and crosses no gap wider than a
+/// column gap. A rule that runs on past the text it crosses -- a chart's line through a data label,
+/// a figure's frame -- strikes nothing.
+fn mark_struck_runs(spans: &mut [TextSpan], lines: &[super::vector_graphics::GraphicsLine]) {
+    for line in lines
+        .iter()
+        .filter(|l| l.ruled && (l.y0 - l.y1).abs() <= 0.5)
+    {
+        let (x0, x1, y) = (
+            line.x0.min(line.x1),
+            line.x0.max(line.x1),
+            (line.y0 + line.y1) / 2.0,
+        );
+        let mut crossed: Vec<(usize, f32, f32, f32, f32)> = spans
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !s.is_rotated())
+            .filter_map(|(i, s)| {
+                let size = s.font_size.abs();
+                let rise = y - s.y;
+                if !(size / 6.0..=size / 2.0).contains(&rise) {
+                    return None;
+                }
+                let (left, right) = s.ink_extent();
+                let slack = size * 0.2;
+                (right > left && left < x1 - slack && right > x0 + slack).then_some((
+                    i,
+                    left,
+                    right,
+                    right.max(s.x + s.width),
+                    size,
+                ))
+            })
+            .collect();
+        crossed.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let Some(&(_, start, ..)) = crossed.first() else {
+            continue;
+        };
+        let size = crossed.iter().map(|c| c.4).fold(0.0, f32::max);
+        let (mut end, mut advance_end) = (start, start);
+        let mut unbroken = true;
+        for &(_, left, right, advance, _) in &crossed {
+            unbroken &= left - end <= size * COLUMN_GAP_EM;
+            if right > end {
+                (end, advance_end) = (right, advance);
+            }
+        }
+        let slack = size * 0.2;
+        let ends_with_run = (end - x1).abs() <= slack || (advance_end - x1).abs() <= slack;
+        if unbroken && (start - x0).abs() <= slack && ends_with_run {
+            for &(i, ..) in &crossed {
+                spans[i].is_struck = true;
+            }
+        }
     }
 }
 
@@ -3736,7 +3825,9 @@ fn space_out_wide_tracking(spans: &mut [TextSpan]) {
 fn abuts(prev: &TextSpan, next: &TextSpan) -> bool {
     let size = prev.font_size;
     let same_line = (prev.y - next.y).abs() <= size.min(next.font_size) * 0.3;
-    let same_font = prev.font_name == next.font_name && (size - next.font_size).abs() < 0.1;
+    let same_font = prev.font_name == next.font_name
+        && (size - next.font_size).abs() < 0.1
+        && prev.is_struck == next.is_struck;
     let gap = next.x - (prev.x + prev.width);
     same_line && same_font && gap <= size * 0.1 && gap >= -size * 0.3
 }
@@ -3793,7 +3884,8 @@ fn merge_fragmented_spans(spans: Vec<TextSpan>) -> Vec<TextSpan> {
 
                     // Same font and size
                     let same_font = prev.font_name == span.font_name
-                        && (prev.font_size - span.font_size).abs() < 0.1;
+                        && (prev.font_size - span.font_size).abs() < 0.1
+                        && prev.is_struck == span.is_struck;
 
                     if !same_y || !same_font {
                         false
@@ -4984,6 +5076,7 @@ mod tests {
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
                 is_italic: false,
+                is_struck: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
                 letter_spacing: 0.0,
             })
@@ -5009,6 +5102,7 @@ mod tests {
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
                 is_italic: false,
+                is_struck: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
                 letter_spacing: 0.0,
             },
@@ -5023,6 +5117,7 @@ mod tests {
                 font_name: "Helvetica".to_string(),
                 is_bold: false,
                 is_italic: false,
+                is_struck: false,
                 direction: TextSpan::LEFT_TO_RIGHT,
                 letter_spacing: 0.0,
             },

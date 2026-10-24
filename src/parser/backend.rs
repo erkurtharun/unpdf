@@ -816,6 +816,13 @@ pub trait PdfBackend: Send + Sync {
         0
     }
 
+    /// The areas the page's strike-out annotations cover (ISO 32000-1 §12.5.6.10): one box per
+    /// quadrilateral of each `/StrikeOut` annotation's `/QuadPoints`, in default user space.
+    /// Defaults to none.
+    fn struck_out_areas(&self, _page: PageId) -> Vec<PageBox> {
+        Vec::new()
+    }
+
     /// Return the document outline (bookmarks) as a tree.
     /// Implementations must handle cycle detection and depth limits.
     fn outline(&self) -> Result<Vec<RawOutlineItem>>;
@@ -1189,6 +1196,59 @@ impl PdfBackend for RawBackend {
         // `/Rotate` must be a multiple of 90; anything else is read as the nearest one.
         let quarter = ((degrees as f64 / 90.0).round() as i64).rem_euclid(4);
         (quarter * 90) as u16
+    }
+
+    fn struck_out_areas(&self, page: PageId) -> Vec<PageBox> {
+        // A hostile file can carry any number of annotations; past this many quadrilaterals the
+        // rest are left unread.
+        const MAX_QUADS: usize = 4096;
+        let Ok(dict) = self.doc.get_dict(page) else {
+            return Vec::new();
+        };
+        let Some(annots) =
+            raw_dict_get(dict, b"Annots").and_then(|a| self.doc.resolve(a).as_array())
+        else {
+            return Vec::new();
+        };
+        let mut areas = Vec::new();
+        for annot in annots {
+            let Some(annot) = raw_resolve_dict(&self.doc, annot) else {
+                continue;
+            };
+            if raw_dict_get(annot, b"Subtype").and_then(|s| s.as_name())
+                != Some(b"StrikeOut".as_slice())
+            {
+                continue;
+            }
+            let Some(points) =
+                raw_dict_get(annot, b"QuadPoints").and_then(|q| self.doc.resolve(q).as_array())
+            else {
+                continue;
+            };
+            let numbers: Vec<f32> = points
+                .iter()
+                .map_while(|v| self.doc.resolve(v).as_f32())
+                .collect();
+            for quad in numbers.as_chunks::<8>().0 {
+                if areas.len() >= MAX_QUADS {
+                    return areas;
+                }
+                let (xs, ys) = (
+                    [quad[0], quad[2], quad[4], quad[6]],
+                    [quad[1], quad[3], quad[5], quad[7]],
+                );
+                let area = PageBox {
+                    llx: xs.iter().copied().fold(f32::MAX, f32::min),
+                    lly: ys.iter().copied().fold(f32::MAX, f32::min),
+                    urx: xs.iter().copied().fold(f32::MIN, f32::max),
+                    ury: ys.iter().copied().fold(f32::MIN, f32::max),
+                };
+                if area.width() > 0.0 && area.height() > 0.0 {
+                    areas.push(area);
+                }
+            }
+        }
+        areas
     }
 
     fn outline(&self) -> Result<Vec<RawOutlineItem>> {

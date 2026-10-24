@@ -545,6 +545,7 @@ fn styled_paragraph(block: &super::layout::TextBlock) -> Paragraph {
             let style = TextStyle {
                 bold: span.is_bold,
                 italic: span.is_italic,
+                strikethrough: span.is_struck,
                 ..Default::default()
             };
             let (superscript, subscript) = match shifts[span_idx] {
