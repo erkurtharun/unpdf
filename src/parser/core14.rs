@@ -84,6 +84,8 @@ impl StandardFont {
         match self {
             Self::Latin(widths) => (0u8..=255)
                 .map(|code| {
+                    // The AFMs have no ligature glyphs (`f_t`), so a code naming one is as
+                    // wide as its letters -- a stand-in, not a metric the font states.
                     encoding.get(&code).map_or(0.0, |text| {
                         text.chars()
                             .filter_map(|ch| data::LATIN_CHARS.binary_search(&ch).ok())

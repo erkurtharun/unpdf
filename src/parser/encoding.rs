@@ -737,6 +737,13 @@ pub(crate) fn glyph_name_to_text(name: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// One underscore-separated component of a glyph name as text.
+///
+/// A `uni` name of several four-digit groups gives one character per group (the AGL's
+/// `uni00660069` → `fi`). A group that is a control character or a surrogate maps the whole
+/// component to nothing: producers name glyphs by their index in that form (`uni00000004`),
+/// and such a name has always read as no glyph name at all. A single group stays as the AGL
+/// specification maps it, control characters included.
 fn agl_component_to_text(name: &str) -> Option<String> {
     if let Some(hex) = name.strip_prefix("uni") {
         if hex.len() > 4 && hex.len() % 4 == 0 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
