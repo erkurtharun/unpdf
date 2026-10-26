@@ -1062,11 +1062,10 @@ fn a_jpeg_2000_codestream_is_read_in_the_dictionary_s_color_space() {
 
 #[test]
 fn a_jpeg_2000_image_of_another_size_than_declared_is_reported() {
-    let page = jpx_page(
-        "/Width 16/Height 4",
-        include_bytes!("fixtures/halves_red_blue_8x4.jp2"),
-    );
-    assert_eq!(page.gaps.images, 1, "{:?}", page.gaps);
+    for size in ["/Width 16/Height 4", "/Width 4/Height 4"] {
+        let page = jpx_page(size, include_bytes!("fixtures/halves_red_blue_8x4.jp2"));
+        assert_eq!(page.gaps.images, 1, "{size}: {:?}", page.gaps);
+    }
 }
 
 #[test]
