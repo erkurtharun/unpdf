@@ -671,10 +671,14 @@ impl Painter<'_> {
                 }
             }
             "d" => {
-                let array: Vec<f32> = match op.operands.first() {
-                    Some(PdfValue::Array(items)) => items.iter().filter_map(number).collect(),
-                    _ => Vec::new(),
+                let items = match op.operands.first() {
+                    Some(PdfValue::Array(items)) => items.as_slice(),
+                    _ => &[],
                 };
+                if !self.admit(items.len() as u64) {
+                    return;
+                }
+                let array: Vec<f32> = items.iter().filter_map(number).collect();
                 let phase = n(1).unwrap_or(0.0);
                 self.state.dash = (!array.is_empty() && array.iter().any(|&v| v > 0.0))
                     .then(|| (array.into(), phase));
@@ -1557,12 +1561,12 @@ impl Painter<'_> {
             dash: None,
         };
         if let Some((array, phase)) = self.state.dash.clone() {
+            if !self.admit(2 * array.len() as u64) {
+                return;
+            }
             let mut array = array.to_vec();
             if array.len() % 2 == 1 {
                 array.extend_from_within(..);
-            }
-            if !self.admit(array.len() as u64) {
-                return;
             }
             let width = (self.state.line_width * max_stretch(&self.state.ctm)).max(1.0) as u64;
             let dash = width.saturating_mul(2).saturating_add(4);

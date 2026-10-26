@@ -169,6 +169,7 @@ fn painting_kinds() -> Vec<(&'static str, Vec<u8>, Vec<u64>)> {
             vec![
                 PAGE,
                 OP,
+                1,
                 OP,
                 OP,
                 OP,
@@ -240,6 +241,7 @@ fn painting_kinds() -> Vec<(&'static str, Vec<u8>, Vec<u64>)> {
             vec![
                 8200,
                 OP,
+                1,
                 OP,
                 OP,
                 OP,
