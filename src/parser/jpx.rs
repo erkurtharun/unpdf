@@ -6,8 +6,6 @@ use super::backend::ImageColorSpace;
 
 /// A JPEG 2000 image decoded: 8-bit samples, interleaved, in `color`.
 pub(crate) struct Decoded {
-    pub width: u32,
-    pub height: u32,
     /// The space the samples are in: the image dictionary's `/ColorSpace` when it gives one
     /// (ISO 32000-1 §8.9.5.3: it overrides the codestream's), else the codestream's own.
     pub color: ImageColorSpace,
@@ -67,10 +65,5 @@ pub(crate) fn decode(
     } else {
         decoded
     };
-    Some(Decoded {
-        width,
-        height,
-        color,
-        samples,
-    })
+    Some(Decoded { color, samples })
 }

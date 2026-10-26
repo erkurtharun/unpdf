@@ -49,7 +49,7 @@ typedef struct UnpdfDocument UnpdfDocument;
  * Classification returned by unpdf_last_error_kind(), so callers can branch on
  * why a call failed without parsing the error message.
  *
- * Values 1..17 mirror the library's own failure reasons one-to-one; values 100+
+ * Values 1..18 mirror the library's own failure reasons one-to-one; values 100+
  * are raised at the FFI boundary and have no library-side counterpart. These
  * numbers are part of the ABI: a new reason takes the next free number and
  * existing ones are never renumbered, so treat an unrecognised value as a
@@ -74,6 +74,7 @@ typedef enum UnpdfErrorKind {
     UNPDF_ERROR_INVALID_PAGE_RANGE  = 15,
     UNPDF_ERROR_RESOURCE_NOT_FOUND  = 16,
     UNPDF_ERROR_ENCODING            = 17,
+    UNPDF_ERROR_RASTER_STOPPED      = 18,  /* painting stopped by its budget */
 
     UNPDF_ERROR_INVALID_ARGUMENT    = 100, /* null argument, or not valid UTF-8 */
     UNPDF_ERROR_PANIC               = 101, /* panic caught at the FFI boundary */

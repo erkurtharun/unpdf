@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added
+
+- **Breaking: a caller's budget bounds and stops the painting of a page.** The work of painting a
+  page grows with its operations and what each covers, not with its pixels, and a caller could
+  neither bound it nor stop it: a 1.8 KB page that fills itself 20,000 times paints for about two
+  minutes at 150 dpi in a release build. `PdfParser::render_page_with(page, options, budget)` paints
+  as `render_page` does, charging `budget` before each step an estimate of its work in pixels, which
+  its documentation details. When the budget returns `Break`, painting stops before that step and
+  the call returns the new `Error::RasterStopped` (`ErrorKind::RasterStopped`, 18 in the C ABI and
+  the .NET and Python bindings); Rust code that matches `Error` or `ErrorKind` exhaustively needs
+  the new arm. `render_page` paints what it painted before.
+
+### Changed
+
+- **Saving the graphics state no longer copies the clip.** `q`, and each Type 3 glyph, copied
+  the clip's coverage mask, a byte for every pixel of the page; the saved states now share it
+  until one changes it, and share the dash array too.
+- **A JPEG 2000 codestream of another size than its image declares is no longer decoded before
+  it is refused**, so an image cannot make its codec decode more samples than it declares.
+
 ### Fixed
 
 - **A run the clip hides is not reported as unreadable.** A text run whose font could not be

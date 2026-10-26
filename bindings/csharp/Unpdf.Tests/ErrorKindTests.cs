@@ -72,12 +72,13 @@ public class ErrorKindTests
         Assert.Equal(15, (int)UnpdfErrorKind.InvalidPageRange);
         Assert.Equal(16, (int)UnpdfErrorKind.ResourceNotFound);
         Assert.Equal(17, (int)UnpdfErrorKind.Encoding);
+        Assert.Equal(18, (int)UnpdfErrorKind.RasterStopped);
         Assert.Equal(100, (int)UnpdfErrorKind.InvalidArgument);
         Assert.Equal(101, (int)UnpdfErrorKind.Panic);
         Assert.Equal(102, (int)UnpdfErrorKind.InvalidOutput);
 
         // 코어(src/error.rs)와 unpdf.h 가 값을 늘렸는데 여기가 따라오지 않으면
         // 이 개수 검사가 먼저 깨진다 — 대표값만 고정하면 놓치는 경로다.
-        Assert.Equal(21, Enum.GetValues<UnpdfErrorKind>().Length);
+        Assert.Equal(22, Enum.GetValues<UnpdfErrorKind>().Length);
     }
 }

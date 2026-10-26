@@ -27,7 +27,7 @@ class ErrorKind(IntEnum):
     Why an unpdf call failed, so callers can branch on the reason instead of
     matching on message text.
 
-    Values 1–17 mirror the library's own failure reasons one-to-one; values 100+
+    Values 1–18 mirror the library's own failure reasons one-to-one; values 100+
     are raised at the FFI boundary and have no library-side counterpart. The
     numbers are part of the native ABI: a new reason takes the next free number
     and existing ones are never renumbered, so an unrecognised value should be
@@ -52,6 +52,7 @@ class ErrorKind(IntEnum):
     INVALID_PAGE_RANGE = 15
     RESOURCE_NOT_FOUND = 16
     ENCODING = 17
+    RASTER_STOPPED = 18
 
     INVALID_ARGUMENT = 100
     PANIC = 101

@@ -33,6 +33,15 @@ pub(crate) fn decode(
     Some(out.into_samples())
 }
 
+/// The samples of the page `data` declares, which [`decode`] decodes whatever size the image
+/// is cut or padded to; 0 when its segments do not read.
+#[cfg(feature = "raster")]
+pub(crate) fn page_samples(data: &[u8], globals: Option<&[u8]>) -> u64 {
+    Image::new_embedded(data, globals).map_or(0, |image| {
+        u64::from(image.width()) * u64::from(image.height())
+    })
+}
+
 impl Decoder for Rows {
     fn push_pixel(&mut self, black: bool) {
         self.push(!black);
