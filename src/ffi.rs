@@ -36,7 +36,7 @@ unparser_shared::export_last_error_abi!(LAST_ERROR, unpdf_last_error, unpdf_last
 /// `unpdf_last_error_kind` value when no error is recorded on this thread.
 pub const UNPDF_ERROR_NONE: c_int = unparser_shared::kind::NONE;
 
-// Values 1..=17 are [`ErrorKind`] discriminants — core failure reasons.
+// Values 1..=18 are [`ErrorKind`] discriminants — core failure reasons.
 // Values 100+ are FFI-boundary reasons with no core `Error` counterpart.
 
 /// An argument was null or not valid UTF-8.

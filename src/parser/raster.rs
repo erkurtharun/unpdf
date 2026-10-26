@@ -13,6 +13,7 @@ use tiny_skia::{
 };
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::rc::Rc;
 
 use super::backend::{
@@ -130,11 +131,13 @@ impl RasteredPage {
 /// Pages larger than this many pixels are refused rather than allocated.
 const MAX_PIXELS: u64 = 200_000_000;
 
-/// Rasterize page `page_num` of the document `backend` reads.
+/// Rasterize page `page_num` of the document `backend` reads, charging `budget` as
+/// [`PdfParser::render_page_with`](super::PdfParser::render_page_with) says.
 pub(crate) fn render_page(
     backend: &dyn PdfBackend,
     page_num: u32,
     options: &RasterOptions,
+    budget: &mut dyn FnMut(u64) -> ControlFlow<()>,
 ) -> Result<RasteredPage> {
     let pages = backend.pages();
     let page = *pages
@@ -183,17 +186,23 @@ pub(crate) fn render_page(
     };
     let base = rotate.pre_concat(unrotated);
 
+    if budget(u64::from(px_w) * u64::from(px_h)).is_break() {
+        return Err(Error::RasterStopped);
+    }
     let mut pixmap = Pixmap::new(px_w, px_h)
         .ok_or_else(|| Error::Render(format!("cannot allocate {px_w} x {px_h} pixels")))?;
     pixmap.fill(tiny_skia::Color::WHITE);
 
     let painted = form_xobject::page_operations(backend, page)?;
-    let mut painter = Painter::new(backend, page, pixmap, base);
+    let mut painter = Painter::new(backend, page, pixmap, base, budget);
     painter.gaps.undecodable_content_streams = painted.undecodable_streams as u32;
     for op in &painted.ops {
         painter.apply(op);
     }
     painter.end_groups();
+    if painter.stopped {
+        return Err(Error::RasterStopped);
+    }
 
     let Painter {
         pixmap,
@@ -326,9 +335,10 @@ struct GState {
     cap: LineCap,
     join: LineJoin,
     miter: f32,
-    dash: Option<(Vec<f32>, f32)>,
-    /// The clip, as a coverage mask; `None` is the whole page.
-    clip: Option<Mask>,
+    dash: Option<(Rc<[f32]>, f32)>,
+    /// The clip, as a coverage mask; `None` is the whole page. Shared by the states saved
+    /// with it, so saving the state copies none of it.
+    clip: Option<Rc<Mask>>,
     /// The text state (ISO 32000-1 §9.3) — part of the graphics state, saved by `q`.
     text: TextState,
 }
@@ -410,6 +420,10 @@ struct Painter<'a> {
     uncolored: bool,
     gaps: RasterGaps,
     substituted_text_runs: u32,
+    /// Charged, before each step of painting, the work the step does, in pixels.
+    budget: &'a mut dyn FnMut(u64) -> ControlFlow<()>,
+    /// The budget stopped the painting: nothing more is painted.
+    stopped: bool,
 }
 
 /// A tiling pattern cell as painted: the content it was named from (form and name), its
@@ -459,8 +473,15 @@ impl PaintSource {
 }
 
 impl<'a> Painter<'a> {
-    /// A painter for `page` drawing into `pixmap`, user space placed on it by `base`.
-    fn new(backend: &'a dyn PdfBackend, page: PageId, pixmap: Pixmap, base: Transform) -> Self {
+    /// A painter for `page` drawing into `pixmap`, user space placed on it by `base`, charging
+    /// `budget`.
+    fn new(
+        backend: &'a dyn PdfBackend,
+        page: PageId,
+        pixmap: Pixmap,
+        base: Transform,
+        budget: &'a mut dyn FnMut(u64) -> ControlFlow<()>,
+    ) -> Self {
         Painter {
             backend,
             page,
@@ -481,7 +502,94 @@ impl<'a> Painter<'a> {
             uncolored: false,
             gaps: RasterGaps::default(),
             substituted_text_runs: 0,
+            budget,
+            stopped: false,
         }
+    }
+
+    /// Charge the budget `pixels` of work, at least one, before the step that does it: `false`,
+    /// the step not taken, once it has stopped the painting.
+    fn admit(&mut self, pixels: u64) -> bool {
+        if !self.stopped {
+            self.stopped = (self.budget)(pixels.max(1)).is_break();
+        }
+        !self.stopped
+    }
+
+    /// How many pixels of the pixmap `bounds`, in device pixels, reaches: all of them when the
+    /// bounds are not known.
+    fn pixels_within(&self, bounds: Option<Rect>) -> u64 {
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let span = |from: f32, to: f32, len: u32| {
+            (to.ceil().min(len as f32) - from.floor().max(0.0)).max(0.0) as u64
+        };
+        match bounds {
+            Some(b) => span(b.left(), b.right(), w) * span(b.top(), b.bottom(), h),
+            None => u64::from(w) * u64::from(h),
+        }
+    }
+
+    /// [`Self::admit`] the pixels of the pixmap `bounds` reaches.
+    fn admit_within(&mut self, bounds: Option<Rect>) -> bool {
+        self.admit(self.pixels_within(bounds))
+    }
+
+    /// [`Self::admit`] every pixel of the pixmap: a step over a whole layer or mask.
+    fn admit_page(&mut self) -> bool {
+        self.admit_within(None)
+    }
+
+    /// [`Self::admit`] the pixels of the pixmap `bounds` reaches and the edges of `path`, in
+    /// the space `transform` maps to device pixels: a step that rasterizes it.
+    fn admit_path(&mut self, bounds: Option<Rect>, path: &Path, transform: Transform) -> bool {
+        let work = self
+            .pixels_within(bounds)
+            .saturating_add(self.edge_work(path, transform));
+        self.admit(work)
+    }
+
+    /// What tiny-skia walks for `path`'s edges beside the pixels it covers: each segment over
+    /// the columns and rows of the pixmap it crosses, and every point once for each tile it
+    /// splits a pixmap past 8191 pixels a side into, since each tile copies the whole path.
+    fn edge_work(&self, path: &Path, transform: Transform) -> u64 {
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let device = |p: &Point| {
+            let t = &transform;
+            (
+                p.x * t.sx + p.y * t.kx + t.tx,
+                p.x * t.ky + p.y * t.sy + t.ty,
+            )
+        };
+        let span =
+            |a: f32, b: f32, len: u32| (a.max(b).min(len as f32) - a.min(b).max(0.0)).max(0.0);
+        let walked: f32 = path
+            .points()
+            .windows(2)
+            .map(|pair| {
+                let ((x0, y0), (x1, y1)) = (device(&pair[0]), device(&pair[1]));
+                span(x0, x1, w) + span(y0, y1, h) + 1.0
+            })
+            .sum();
+        let points = path.points().len() as u64;
+        (walked as u64).saturating_add(points.saturating_mul(self.tiles()))
+    }
+
+    /// What stroking `path` `width` device pixels wide adds to its edges: each of its points
+    /// grows two outline edges, a join's or a cap's, across up to that many more rows, and
+    /// each tile copies them.
+    fn stroke_work(&self, path: &Path, width: f32) -> u64 {
+        let reach = (width.max(1.0).ceil() as u64).saturating_add(self.tiles());
+        (path.points().len() as u64)
+            .saturating_mul(2)
+            .saturating_mul(reach)
+    }
+
+    /// How many tiles tiny-skia splits a drawing on the pixmap into: one, or more past 8191
+    /// pixels a side.
+    fn tiles(&self) -> u64 {
+        const TILE_SIDE: u32 = 8191;
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        u64::from(w.div_ceil(TILE_SIDE)) * u64::from(h.div_ceil(TILE_SIDE))
     }
 }
 
@@ -495,6 +603,9 @@ fn number(v: &PdfValue) -> Option<f32> {
 
 impl Painter<'_> {
     fn apply(&mut self, op: &ContentOp) {
+        if !self.admit(1) {
+            return;
+        }
         // A form's operations follow the `q`, `cm` and clip that place it, so where they start
         // the CTM is the form's space. (Leaving a form, the `Q` that follows restores the outer
         // state, this included.)
@@ -565,8 +676,8 @@ impl Painter<'_> {
                     _ => Vec::new(),
                 };
                 let phase = n(1).unwrap_or(0.0);
-                self.state.dash =
-                    (!array.is_empty() && array.iter().any(|&v| v > 0.0)).then_some((array, phase));
+                self.state.dash = (!array.is_empty() && array.iter().any(|&v| v > 0.0))
+                    .then(|| (array.into(), phase));
             }
             "gs" => {
                 if let Some(PdfValue::Name(name)) = op.operands.first() {
@@ -800,7 +911,14 @@ impl Painter<'_> {
         // Taken out of the cache while its glyphs are painted, put back after.
         let mut loaded = self.fonts.remove(&key).flatten();
 
-        for item in items {
+        'run: for item in items {
+            let codes = match item {
+                PdfValue::Str(bytes) => bytes.len() as u64,
+                _ => 1,
+            };
+            if !self.admit(codes) {
+                break 'run;
+            }
             let bytes = match item {
                 PdfValue::Str(bytes) => bytes,
                 PdfValue::Integer(_) | PdfValue::Real(_) => {
@@ -821,6 +939,9 @@ impl Painter<'_> {
             };
             let width = font.code_bytes();
             for (i, chunk) in bytes.chunks(width).enumerate() {
+                if self.stopped {
+                    break 'run;
+                }
                 let code = chunk.iter().fold(0u32, |acc, &b| acc << 8 | u32::from(b));
                 let gid = font.glyph(code);
                 // The width extraction measures with; the program's own when the font
@@ -910,6 +1031,13 @@ impl Painter<'_> {
         let invisible = matches!(text.render_mode, 3 | 7);
         let mut missing = false;
         for item in items {
+            let codes = match item {
+                PdfValue::Str(bytes) => bytes.len() as u64,
+                _ => 1,
+            };
+            if !self.admit(codes) {
+                return;
+            }
             let bytes = match item {
                 PdfValue::Str(bytes) => bytes,
                 PdfValue::Integer(_) | PdfValue::Real(_) => {
@@ -921,6 +1049,9 @@ impl Painter<'_> {
             };
             let advances = self.backend.glyph_advances(scope, font_name, bytes);
             for (i, &code) in bytes.iter().enumerate() {
+                if self.stopped {
+                    return;
+                }
                 let measured =
                     advances
                         .as_ref()
@@ -955,7 +1086,7 @@ impl Painter<'_> {
     ) {
         // A glyph that shows text in a Type 3 font that shows text ... ends here.
         const MAX_GLYPH_DEPTH: usize = 4;
-        if self.glyph_depth >= MAX_GLYPH_DEPTH {
+        if self.glyph_depth >= MAX_GLYPH_DEPTH || self.stopped {
             return;
         }
         let origin = text.origin_offset(measured);
@@ -1014,8 +1145,9 @@ impl Painter<'_> {
         let blend = self.state.blend;
         let soft_mask = self.state.soft_mask.clone();
         let layered = self.groups.iter().filter(|g| g.is_some()).count();
-        let layer = ((alpha < 1.0 || blend != BlendMode::SourceOver || soft_mask.is_some())
-            && layered < MAX_GROUP_LAYERS)
+        let own_layer = (alpha < 1.0 || blend != BlendMode::SourceOver || soft_mask.is_some())
+            && layered < MAX_GROUP_LAYERS;
+        let layer = (own_layer && self.admit_page())
             .then(|| Pixmap::new(self.pixmap.width(), self.pixmap.height()))
             .flatten();
         match layer {
@@ -1049,6 +1181,9 @@ impl Painter<'_> {
         })) = self.groups.pop()
         {
             let group = std::mem::replace(&mut self.pixmap, under);
+            if !self.admit_page() {
+                return;
+            }
             self.pixmap.draw_pixmap(
                 0,
                 0,
@@ -1074,7 +1209,7 @@ impl Painter<'_> {
     /// Paint one glyph outline in text render mode `mode` (fill, stroke, or both). `false` when
     /// part of it was not painted: its color is a pattern this does not paint.
     fn paint_glyph(&mut self, outline: &Path, transform: Transform, mode: i64) -> bool {
-        if (4..=7).contains(&mode) {
+        if (4..=7).contains(&mode) && self.admit(outline.points().len() as u64) {
             if let Some(device) = outline.clone().transform(transform) {
                 self.text_clip
                     .get_or_insert_with(PathBuilder::new)
@@ -1086,13 +1221,17 @@ impl Painter<'_> {
         let mut painted = true;
         if fill {
             match self.current_paint(false, transform) {
-                Some(source) => self.pixmap.fill_path(
-                    outline,
-                    &source.paint(),
-                    FillRule::Winding,
-                    transform,
-                    active_clip(&self.state),
-                ),
+                Some(source) => {
+                    if self.admit_path(outline.bounds().transform(transform), outline, transform) {
+                        self.pixmap.fill_path(
+                            outline,
+                            &source.paint(),
+                            FillRule::Winding,
+                            transform,
+                            active_clip(&self.state),
+                        );
+                    }
+                }
                 None => painted = false,
             }
         }
@@ -1105,17 +1244,25 @@ impl Painter<'_> {
             let paint = source.paint();
             if let Some(device) = outline.clone().transform(transform) {
                 let width = self.state.line_width * transform_scale(&self.state.ctm);
+                let stretched = self.state.line_width * max_stretch(&self.state.ctm);
                 let stroke = Stroke {
                     width: if width < 1.0 { 0.0 } else { width },
                     ..Stroke::default()
                 };
-                self.pixmap.stroke_path(
-                    &device,
-                    &paint,
-                    &stroke,
-                    Transform::identity(),
-                    active_clip(&self.state),
-                );
+                let bounds = stroke_bounds(&device, &stroke, Transform::identity());
+                let work = self
+                    .pixels_within(bounds)
+                    .saturating_add(self.edge_work(&device, Transform::identity()))
+                    .saturating_add(self.stroke_work(&device, stretched));
+                if self.admit(work) {
+                    self.pixmap.stroke_path(
+                        &device,
+                        &paint,
+                        &stroke,
+                        Transform::identity(),
+                        active_clip(&self.state),
+                    );
+                }
             }
         }
         painted
@@ -1168,13 +1315,18 @@ impl Painter<'_> {
         if let Some(path) = &path {
             if let Some(rule) = fill {
                 match self.current_paint(false, self.state.ctm) {
-                    Some(source) => self.pixmap.fill_path(
-                        path,
-                        &source.paint(),
-                        rule,
-                        self.state.ctm,
-                        active_clip(&self.state),
-                    ),
+                    Some(source) => {
+                        let bounds = path.bounds().transform(self.state.ctm);
+                        if self.admit_path(bounds, path, self.state.ctm) {
+                            self.pixmap.fill_path(
+                                path,
+                                &source.paint(),
+                                rule,
+                                self.state.ctm,
+                                active_clip(&self.state),
+                            );
+                        }
+                    }
                     None => self.gaps.shadings += 1,
                 }
             }
@@ -1268,8 +1420,11 @@ impl Painter<'_> {
         let cell = Transform::from_row(kx, 0.0, 0.0, -ky, -x0 * kx, (y0 + y_step) * ky);
         let tile_to_device = to_device.pre_concat(cell.invert()?);
 
+        if !self.admit(u64::from(w as u32) * u64::from(h as u32)) {
+            return None;
+        }
         let pixmap = Pixmap::new(w as u32, h as u32)?;
-        let mut tile = Painter::new(self.backend, self.page, pixmap, cell);
+        let mut tile = Painter::new(self.backend, self.page, pixmap, cell, &mut *self.budget);
         tile.current_form = Some(pattern.id);
         tile.pattern_depth = self.pattern_depth + 1;
         tile.glyph_depth = self.glyph_depth;
@@ -1295,6 +1450,10 @@ impl Painter<'_> {
             tile.apply(op);
         }
         tile.end_groups();
+        if tile.stopped {
+            self.stopped = true;
+            return None;
+        }
         self.gaps.absorb(&tile.gaps);
         self.substituted_text_runs += tile.substituted_text_runs;
         Some((tile.pixmap, tile_to_device))
@@ -1370,6 +1529,13 @@ impl Painter<'_> {
             self.gaps.shadings += 1;
             return;
         };
+        if !self.admit_path(
+            rect.transform(transform),
+            &PathBuilder::from_rect(rect),
+            transform,
+        ) {
+            return;
+        }
         self.pixmap
             .fill_rect(rect, &paint, transform, active_clip(&self.state));
     }
@@ -1390,12 +1556,31 @@ impl Painter<'_> {
             line_join: self.state.join,
             dash: None,
         };
-        if let Some((array, phase)) = &self.state.dash {
-            let mut array = array.clone();
+        if let Some((array, phase)) = self.state.dash.clone() {
+            let mut array = array.to_vec();
             if array.len() % 2 == 1 {
                 array.extend_from_within(..);
             }
-            stroke.dash = StrokeDash::new(array, *phase);
+            if !self.admit(array.len() as u64) {
+                return;
+            }
+            let width = (self.state.line_width * max_stretch(&self.state.ctm)).max(1.0) as u64;
+            let dash = width.saturating_mul(2).saturating_add(4);
+            let laid = dashes(path, &array).saturating_mul(dash);
+            if !self.admit(laid.saturating_mul(self.tiles())) {
+                return;
+            }
+            stroke.dash = StrokeDash::new(array, phase);
+        }
+        let bounds = stroke_bounds(path, &stroke, self.state.ctm);
+        let work = self
+            .pixels_within(bounds)
+            .saturating_add(self.edge_work(path, self.state.ctm))
+            .saturating_add(
+                self.stroke_work(path, self.state.line_width * max_stretch(&self.state.ctm)),
+            );
+        if !self.admit(work) {
+            return;
         }
         self.pixmap.stroke_path(
             path,
@@ -1413,18 +1598,22 @@ impl Painter<'_> {
 
     /// [`Self::clip`] with `path` in the space `transform` maps to device pixels.
     fn clip_in(&mut self, path: Option<&Path>, rule: FillRule, transform: Transform) {
+        let edges = path.map_or(0, |path| self.edge_work(path, transform));
+        if !self.admit(self.pixels_within(None).saturating_add(edges)) {
+            return;
+        }
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
         let Some(path) = path else {
-            self.state.clip = Mask::new(w, h);
+            self.state.clip = Mask::new(w, h).map(Rc::new);
             self.refresh_masked_clip();
             return;
         };
         match &mut self.state.clip {
-            Some(mask) => mask.intersect_path(path, rule, true, transform),
+            Some(mask) => Rc::make_mut(mask).intersect_path(path, rule, true, transform),
             None => {
                 if let Some(mut mask) = Mask::new(w, h) {
                     mask.fill_path(path, rule, true, transform);
-                    self.state.clip = Some(mask);
+                    self.state.clip = Some(Rc::new(mask));
                 }
             }
         }
@@ -1434,6 +1623,9 @@ impl Painter<'_> {
     /// Recompute what painting is masked by: the clip multiplied by the soft mask in effect
     /// (nothing, when there is none).
     fn refresh_masked_clip(&mut self) {
+        if self.state.soft_mask.is_some() && !self.admit_page() {
+            return;
+        }
         self.state.masked_clip = self.state.soft_mask.as_ref().map(|soft| {
             let mut combined = (**soft).clone();
             if let Some(clip) = &self.state.clip {
@@ -1469,6 +1661,9 @@ impl Painter<'_> {
             .state
             .ctm
             .pre_concat(Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]));
+        if !self.admit_page() {
+            return None;
+        }
         let mut pixmap = Pixmap::new(self.pixmap.width(), self.pixmap.height())?;
         if mask.luminosity {
             let [r, g, b] = mask.backdrop;
@@ -1478,7 +1673,13 @@ impl Painter<'_> {
                 pixmap.fill(backdrop);
             }
         }
-        let mut sub = Painter::new(self.backend, self.page, pixmap, to_device);
+        let mut sub = Painter::new(
+            self.backend,
+            self.page,
+            pixmap,
+            to_device,
+            &mut *self.budget,
+        );
         sub.current_form = Some(group.id);
         sub.pattern_depth = self.pattern_depth + 1;
         sub.glyph_depth = self.glyph_depth;
@@ -1499,6 +1700,10 @@ impl Painter<'_> {
             sub.apply(op);
         }
         sub.end_groups();
+        if sub.stopped {
+            self.stopped = true;
+            return None;
+        }
         self.gaps.absorb(&sub.gaps);
         self.substituted_text_runs += sub.substituted_text_runs;
         if mask.transfer_function {
@@ -1515,6 +1720,15 @@ impl Painter<'_> {
     }
 
     fn draw_image(&mut self, image: &RawXObject) {
+        let unit = Rect::from_ltrb(0.0, 0.0, 1.0, 1.0).map(PathBuilder::from_rect);
+        let drawn = unit.map_or(self.pixels_within(None), |unit| {
+            let bounds = unit.bounds().transform(self.state.ctm);
+            let edges = self.edge_work(&unit, self.state.ctm);
+            self.pixels_within(bounds).saturating_add(edges)
+        });
+        if !self.admit(drawn.saturating_add(samples(image))) {
+            return;
+        }
         let Some(pixmap) = self.image_pixmap(image) else {
             self.gaps.images += 1;
             return;
@@ -1718,7 +1932,7 @@ fn decode_samples(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, V
 /// fail it, and an alpha channel is dropped (`/SMaskInData` is not read).
 fn decode_jpx(image: &RawXObject, w: u32, h: u32) -> Option<(PngColorType, Vec<u8>)> {
     let decoded = super::jpx::decode(&image.data, image.color.as_ref(), |width, height| {
-        png_encode::decodable(width, height, 4)
+        (width, height) == (w, h) && png_encode::decodable(width, height, 4)
     })?;
     if (decoded.width, decoded.height) != (w, h) {
         return None;
@@ -1944,7 +2158,7 @@ fn shading_paint(shading: &Shading, transform: Transform, alpha: f32) -> Option<
 fn active_clip(state: &GState) -> Option<&Mask> {
     match &state.masked_clip {
         Some(masked) => Some(masked),
-        None => state.clip.as_ref(),
+        None => state.clip.as_deref(),
     }
 }
 
@@ -1990,6 +2204,60 @@ fn transform_scale(t: &Transform) -> f32 {
     ((sx * sy).abs()).sqrt()
 }
 
+/// How much `t` stretches lengths along the axis it stretches most.
+fn max_stretch(t: &Transform) -> f32 {
+    t.sx.hypot(t.ky).max(t.kx.hypot(t.sy))
+}
+
+/// Where stroking `path` with `stroke` in the space `transform` maps to device pixels can paint:
+/// its bounds widened by the farthest a join or a cap reaches past the line, then by the pixel
+/// a hairline or an anti-aliased edge covers.
+fn stroke_bounds(path: &Path, stroke: &Stroke, transform: Transform) -> Option<Rect> {
+    let reach = stroke.width / 2.0 * stroke.miter_limit.max(std::f32::consts::SQRT_2);
+    path.bounds()
+        .outset(reach, reach)?
+        .transform(transform)?
+        .outset(1.0, 1.0)
+}
+
+/// What drawing `image` decodes, for it and its soft mask: the bytes its filters gave, and the
+/// samples its codec makes -- its declared size, or a JBIG2 page's own when that is larger.
+fn samples(image: &RawXObject) -> u64 {
+    let decoded = |x: &RawXObject| {
+        let declared = x
+            .width
+            .zip(x.height)
+            .map_or(0, |(w, h)| u64::from(w) * u64::from(h));
+        let page = match (x.filter.as_deref(), &x.codec_parms) {
+            (Some("JBIG2Decode"), Some(CodecParms::Jbig2 { globals })) => {
+                super::jbig2::page_samples(&x.data, globals.as_deref())
+            }
+            _ => 0,
+        };
+        declared.max(page).saturating_add(x.data.len() as u64)
+    };
+    decoded(image).saturating_add(image.smask.as_deref().map_or(0, decoded))
+}
+
+/// How many dashes stroking `path` with `pattern`, in the path's space, can lay: its whole
+/// periods, capped where tiny-skia gives up at a million, and a partial period of every dash for
+/// each contour, which starts the pattern again. Its length is taken along its control points,
+/// which a curve never exceeds, and each point counts as a contour.
+fn dashes(path: &Path, pattern: &[f32]) -> u64 {
+    const MAX_DASHES: f32 = 1_000_000.0;
+    let pairs = pattern.len() / 2;
+    let interval: f32 = pattern.iter().sum();
+    let length: f32 = path.points().windows(2).map(|p| p[0].distance(p[1])).sum();
+    let periods = (length * pairs as f32 / interval).ceil();
+    let periods = if periods.is_nan() {
+        0
+    } else {
+        periods.min(MAX_DASHES) as u64
+    };
+    let partial = (pairs as u64).saturating_mul(path.points().len() as u64);
+    periods.saturating_add(partial)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2017,6 +2285,43 @@ mod tests {
             .data()
             .chunks(4)
             .all(|p| p[0].abs_diff(128) <= 1 && p[3] == 255));
+    }
+
+    #[test]
+    fn a_step_the_budget_refuses_is_not_painted() {
+        use super::super::backend::RawBackend;
+        use super::super::test_pdf::{pdf, stream};
+        let content = b"0 0 1 rg 0 0 100 100 re f";
+        let bytes = pdf(
+            vec![
+                b"<</Type/Catalog/Pages 2 0 R>>".to_vec(),
+                b"<</Type/Pages/Kids[3 0 R]/Count 1>>".to_vec(),
+                b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R>>".to_vec(),
+                stream(&format!("<</Length {}>>", content.len()), content),
+            ],
+            1,
+        );
+        let backend = RawBackend::load_bytes(&bytes).unwrap();
+        let page = backend.pages()[&1];
+        let ops = form_xobject::page_operations(&backend, page).unwrap().ops;
+        for (refused, painted) in [(u64::MAX, true), (100 * 100, false)] {
+            let mut budget = |work: u64| {
+                if work >= refused {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            };
+            let base = Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, 100.0);
+            let white = solid(100, 100, [255; 4]);
+            let mut painter = Painter::new(&backend, page, white, base, &mut budget);
+            for op in &ops {
+                painter.apply(op);
+            }
+            assert_eq!(painter.stopped, !painted);
+            let blue = painter.pixmap.pixels().iter().any(|p| p.red() == 0);
+            assert_eq!(blue, painted, "{refused}");
+        }
     }
 
     #[test]

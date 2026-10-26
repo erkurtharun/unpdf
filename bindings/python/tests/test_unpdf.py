@@ -688,6 +688,7 @@ class TestErrorKind:
             "INVALID_PAGE_RANGE": 15,
             "RESOURCE_NOT_FOUND": 16,
             "ENCODING": 17,
+            "RASTER_STOPPED": 18,
             "INVALID_ARGUMENT": 100,
             "PANIC": 101,
             "INVALID_OUTPUT": 102,

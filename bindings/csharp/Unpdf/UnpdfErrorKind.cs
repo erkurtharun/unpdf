@@ -5,7 +5,7 @@ namespace Unpdf;
 /// matching on message text.
 /// </summary>
 /// <remarks>
-/// Values 1–17 mirror the library's own failure reasons one-to-one; values 100+ are
+/// Values 1–18 mirror the library's own failure reasons one-to-one; values 100+ are
 /// raised at the interop boundary and have no library-side counterpart. The numbers
 /// are part of the native ABI (<c>UnpdfErrorKind</c> in <c>unpdf.h</c>): a new reason
 /// takes the next free number and existing ones are never renumbered, so treat an
@@ -66,6 +66,9 @@ public enum UnpdfErrorKind
 
     /// <summary>A text encoding failure.</summary>
     Encoding = 17,
+
+    /// <summary>Painting a page stopped: the budget it was given ran out.</summary>
+    RasterStopped = 18,
 
     /// <summary>An argument was null or not valid UTF-8.</summary>
     InvalidArgument = 100,

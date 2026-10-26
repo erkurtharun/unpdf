@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **Breaking: a caller's budget bounds and stops the painting of a page.** The work of painting a
+  page grows with its operations and what each covers, not with its pixels, and a caller could
+  neither bound it nor stop it. `PdfParser::render_page_with(page, options, budget)` paints as
+  `render_page` does, charging `budget` before each step the work it does, in pixels: the page's
+  own; one for each operator applied, inside forms, tiling pattern cells, soft masks and Type 3
+  glyphs too, and one for each code a text string shows or other element of a text array; for a
+  fill, stroke or glyph, its bounds on the page and the pixels its edges are walked over, a stroke's
+  width again at each point; for a dashed stroke, its dash array and dashes; for an image, its
+  bounds, the bytes its filters gave and the samples its codec makes; for a clip, a transparency
+  group's layer and its compositing, and a soft mask, the whole page. When the budget breaks,
+  painting stops before that step and the call returns the new `Error::RasterStopped`
+  (`ErrorKind::RasterStopped`, 18 in the C ABI and the .NET and Python bindings). `render_page`
+  paints what it painted before.
+
+### Changed
+
+- **Saving the graphics state no longer copies the clip.** `q`, and each Type 3 glyph, copied
+  the clip's coverage mask, a byte for every pixel of the page; the saved states now share it
+  until one changes it, and share the dash array too.
+- **A JPEG 2000 codestream of another size than its image declares is refused before it is
+  decoded**, as it was refused after.
+
 ### Fixed
 
 - **A run the clip hides is not reported as unreadable.** A text run whose font could not be

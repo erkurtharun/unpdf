@@ -32,7 +32,30 @@ impl PdfParser {
         page_num: u32,
         options: &super::raster::RasterOptions,
     ) -> Result<super::raster::RasteredPage> {
-        super::raster::render_page(&*self.backend, page_num, options)
+        self.render_page_with(page_num, options, &mut |_| {
+            std::ops::ControlFlow::Continue(())
+        })
+    }
+
+    /// [`render_page`](Self::render_page), charging `budget` before each step of painting the work
+    /// that step does, so a caller can bound the work of a page and stop it partway. The work is
+    /// counted in pixels: the page's own; one for each operator applied, in forms, tiling pattern
+    /// cells, soft masks and Type 3 glyphs as they are painted too, and one for each code a text
+    /// string shows or other element of a text array; for a fill, stroke or glyph, its device-space
+    /// bounds on the page and the pixels its edges are walked over, a stroke's width again at each
+    /// point; for a dashed stroke, its dash array and dashes; for an image, its bounds, the bytes
+    /// its filters gave and the samples its codec makes; for a clip, a transparency group's layer
+    /// and its compositing, and a soft mask, the whole page; for a tiling pattern's cell, its own
+    /// pixels. When `budget` breaks, painting stops before that step and this returns
+    /// [`Error::RasterStopped`].
+    #[cfg(feature = "raster")]
+    pub fn render_page_with(
+        &self,
+        page_num: u32,
+        options: &super::raster::RasterOptions,
+        budget: &mut dyn FnMut(u64) -> std::ops::ControlFlow<()>,
+    ) -> Result<super::raster::RasteredPage> {
+        super::raster::render_page(&*self.backend, page_num, options, budget)
     }
 
     /// Open a PDF file.

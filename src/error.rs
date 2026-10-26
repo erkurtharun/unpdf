@@ -55,6 +55,8 @@ pub enum ErrorKind {
     ResourceNotFound = 16,
     /// [`Error::Encoding`]
     Encoding = 17,
+    /// [`Error::RasterStopped`]
+    RasterStopped = 18,
 }
 
 /// Error types that can occur during PDF processing.
@@ -124,6 +126,10 @@ pub enum Error {
     #[error("Encoding error: {0}")]
     Encoding(String),
 
+    /// Painting a page stopped: the budget given to `PdfParser::render_page_with` broke.
+    #[error("Page painting stopped by its budget")]
+    RasterStopped,
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
@@ -154,6 +160,7 @@ impl Error {
             Error::InvalidPageRange(_) => ErrorKind::InvalidPageRange,
             Error::ResourceNotFound(_) => ErrorKind::ResourceNotFound,
             Error::Encoding(_) => ErrorKind::Encoding,
+            Error::RasterStopped => ErrorKind::RasterStopped,
         }
     }
 }
@@ -214,6 +221,7 @@ mod tests {
         InvalidPageRange = 15,
         ResourceNotFound = 16,
         Encoding = 17,
+        RasterStopped = 18,
     }
 
     #[test]
