@@ -87,6 +87,27 @@ fn a_page_out_of_range_fails_with_its_kind() {
 }
 
 #[test]
+fn painting_past_max_work_stops_with_its_kind() {
+    let bytes = image_only_pdf();
+    unsafe {
+        let doc = unpdf_parse_bytes(bytes.as_ptr(), bytes.len());
+        let mut len = 7usize;
+        // The first charge is the page's own pixels: 595 x 842 at 72 dpi.
+        let options = CString::new(r#"{"dpi": 72, "max_work": 1000}"#).unwrap();
+        let png = unpdf_render_page(doc, 1, options.as_ptr(), &mut len, ptr::null_mut());
+        assert!(png.is_null());
+        assert_eq!(len, 0);
+        assert_eq!(unpdf_last_error_kind(), ErrorKind::RasterStopped as i32);
+
+        let options = CString::new(r#"{"dpi": 72, "max_work": 100000000}"#).unwrap();
+        let png = unpdf_render_page(doc, 1, options.as_ptr(), &mut len, ptr::null_mut());
+        assert!(!png.is_null(), "a budget the page fits in paints it");
+        unpdf_free_bytes(png, len);
+        unpdf_free_document(doc);
+    }
+}
+
+#[test]
 fn malformed_options_are_an_invalid_argument() {
     let bytes = image_only_pdf();
     unsafe {
@@ -96,6 +117,7 @@ fn malformed_options_are_an_invalid_argument() {
             r#"{"region": "bleed"}"#,
             r#"{"dpi": "high"}"#,
             r#"{"scale": 2}"#,
+            r#"{"max_work": -1}"#,
         ] {
             let options = CString::new(bad).unwrap();
             let png = unpdf_render_page(doc, 1, options.as_ptr(), &mut len, ptr::null_mut());

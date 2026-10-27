@@ -832,6 +832,14 @@ class TestRenderPage:
                 doc.render_page(1, region="bleed")
             assert err.value.kind == unpdf.ErrorKind.INVALID_ARGUMENT
 
+    def test_painting_past_max_work_stops_with_its_kind(self):
+        with unpdf.Document(_image_only_pdf()) as doc:
+            # The first charge is the page's own pixels: 595 x 842 at 72 dpi.
+            with pytest.raises(unpdf.UnpdfError) as err:
+                doc.render_page(1, dpi=72, max_work=1000)
+            assert err.value.kind == unpdf.ErrorKind.RASTER_STOPPED
+            assert doc.render_page(1, dpi=72, max_work=100_000_000).width == 595
+
     def test_a_closed_document_refuses_further_calls(self):
         doc = unpdf.Document(_image_only_pdf())
         doc.close()

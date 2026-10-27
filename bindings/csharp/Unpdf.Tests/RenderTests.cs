@@ -61,6 +61,19 @@ public class RenderTests
     }
 
     [Fact]
+    public void RenderPage_PastMaxWork_ThrowsWithItsKind()
+    {
+        using var doc = UnpdfDocument.ParseBytes(PdfFixtures.ImageOnlyPdf());
+        // The first charge is the page's own pixels: 595 x 842 at 72 dpi.
+        var ex = Assert.Throws<UnpdfException>(
+            () => doc.RenderPage(1, new RenderPageOptions { Dpi = 72, MaxWork = 1000 }));
+        Assert.Equal(UnpdfErrorKind.RasterStopped, ex.Kind);
+
+        var page = doc.RenderPage(1, new RenderPageOptions { Dpi = 72, MaxWork = 100_000_000 });
+        Assert.Equal(595, page.Width);
+    }
+
+    [Fact]
     public void RenderPage_PageOutOfRange_ThrowsWithItsKind()
     {
         using var doc = UnpdfDocument.ParseBytes(PdfFixtures.ImageOnlyPdf());

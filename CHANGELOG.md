@@ -13,6 +13,11 @@
   the call returns the new `Error::RasterStopped` (`ErrorKind::RasterStopped`, 18 in the C ABI and
   the .NET and Python bindings); Rust code that matches `Error` or `ErrorKind` exhaustively needs
   the new arm. `render_page` paints what it painted before.
+- **The C ABI and the bindings bound a page's painting too.** `unpdf_render_page` takes
+  `"max_work"` in its options, the most work, in the pixels `render_page_with` charges, the
+  page's painting may take; past it the call fails with `RasterStopped` (18). .NET:
+  `RenderPageOptions.MaxWork`; Python: `render_page(..., max_work=N)`. Absent, painting is
+  unbounded as before.
 
 ### Changed
 

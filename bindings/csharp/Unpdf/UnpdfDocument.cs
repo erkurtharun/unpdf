@@ -863,6 +863,8 @@ public class UnpdfDocument : IDisposable
     /// <param name="options">Resolution and region; <c>null</c> for 150 dpi of the crop box.</param>
     /// <exception cref="UnpdfException">
     /// <see cref="UnpdfErrorKind.PageOutOfRange"/> for a page the document does not have;
+    /// <see cref="UnpdfErrorKind.RasterStopped"/> for a page that would take more than
+    /// <see cref="RenderPageOptions.MaxWork"/>;
     /// <see cref="UnpdfErrorKind.InvalidArgument"/> for options it cannot use.
     /// </exception>
     public RenderedPage RenderPage(int pageNumber, RenderPageOptions? options = null)
@@ -874,6 +876,7 @@ public class UnpdfDocument : IDisposable
             {
                 Dpi = options.Dpi,
                 Region = options.Region == PageRegion.Media ? "media" : "crop",
+                MaxWork = options.MaxWork,
             },
             UnpdfJsonContext.Default.RenderOptionsPayload);
         var ptr = NativeMethods.unpdf_render_page(_handle, pageNumber, json, out var length, out var info);

@@ -391,14 +391,17 @@ uint8_t* unpdf_get_resource_data(const UnpdfDocument* doc,
  * counted in out_info; the rest of the page is painted.
  *
  * @param page_number 1-indexed page number.
- * @param options_json NULL, or {"dpi": 150, "region": "crop" | "media"}.
+ * @param options_json NULL, or {"dpi": 150, "region": "crop" | "media",
+ *        "max_work": N}. max_work bounds the work painting may take, in the
+ *        pixels each step is charged (see PdfParser::render_page_with); past it
+ *        painting stops and the call fails with RasterStopped. Default unbounded.
  * @param out_len Receives the PNG length in bytes.
  * @param out_info NULL, or receives {"width":N,"height":N,"gaps":{"text_runs":N,
  *        "images":N,"inline_images":N,"shadings":N,"soft_masks":N,
  *        "undecodable_content_streams":N}}
  *        (must be freed with unpdf_free_string).
  * @return PNG bytes (must be freed with unpdf_free_bytes), or NULL on error
- *         (PageOutOfRange, Render, InvalidArgument).
+ *         (PageOutOfRange, Render, RasterStopped, InvalidArgument).
  */
 uint8_t* unpdf_render_page(const UnpdfDocument* doc,
                            int page_number,

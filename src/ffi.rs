@@ -1273,13 +1273,17 @@ unparser_shared::export_string_getter!(
 );
 
 /// Deserializable mirror of [`RasterOptions`](crate::parser::raster::RasterOptions) for
-/// `unpdf_render_page`: `{"dpi": 150, "region": "crop"}`. Every field is optional.
+/// `unpdf_render_page`: `{"dpi": 150, "region": "crop", "max_work": N}`. Every field is
+/// optional.
 #[derive(serde::Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct FfiRasterOptions {
     dpi: Option<f32>,
     /// `"crop"` (default) or `"media"`.
     region: Option<String>,
+    /// The most work, in the pixels `PdfParser::render_page_with` charges, the page may take;
+    /// unbounded when absent.
+    max_work: Option<u64>,
 }
 
 /// Rasterize a page to a PNG.
@@ -1290,8 +1294,11 @@ struct FfiRasterOptions {
 /// some image codecs, mesh shadings) is left out and counted in `out_info`; the rest of the page
 /// is painted.
 ///
-/// `options_json`: null, or `{"dpi": 150, "region": "crop" | "media"}` — resolution in dots
-/// per inch (default 150) and the box painted (default the crop box, what a viewer shows).
+/// `options_json`: null, or `{"dpi": 150, "region": "crop" | "media", "max_work": N}` —
+/// resolution in dots per inch (default 150), the box painted (default the crop box, what a
+/// viewer shows), and the most work painting may take, in the pixels
+/// `PdfParser::render_page_with` charges for each step (default unbounded). A page whose
+/// painting would take more fails with `RasterStopped` before the step that exceeds it.
 ///
 /// `out_info`, when not null, receives `{"width":N,"height":N,"gaps":{"text_runs":N,
 /// "images":N,"inline_images":N,"shadings":N,"soft_masks":N,
@@ -1304,7 +1311,7 @@ struct FfiRasterOptions {
 /// - `doc` must be a valid document handle from one of the `unpdf_parse_*` functions.
 /// - `options_json` must be null or a valid null-terminated UTF-8 string.
 /// - `out_len` must be a valid pointer; `out_info` must be null or a valid pointer.
-/// - Returns null on error (`PageOutOfRange`, `Render`, `InvalidArgument`); see
+/// - Returns null on error (`PageOutOfRange`, `Render`, `RasterStopped`, `InvalidArgument`); see
 ///   `unpdf_last_error`.
 /// - The returned PNG must be freed with `unpdf_free_bytes`.
 #[no_mangle]
@@ -1352,8 +1359,17 @@ pub unsafe extern "C" fn unpdf_render_page(
             )
         })?;
         let page_number = u32::try_from(page_number).unwrap_or(0);
+        let mut spent = 0u64;
+        let max_work = options.max_work.unwrap_or(u64::MAX);
         let page = parser
-            .render_page(page_number, &raster_options)
+            .render_page_with(page_number, &raster_options, &mut |work| {
+                spent = spent.saturating_add(work);
+                if spent > max_work {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            })
             .map_err(ffi_err)?;
         let g = page.gaps;
         let info = serde_json::json!({

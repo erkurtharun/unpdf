@@ -652,8 +652,18 @@ class RenderedPage:
     substituted_text_runs: int = 0
 
 
-def _render(lib: ctypes.CDLL, handle: Any, page_number: int, dpi: float, region: str) -> RenderedPage:
-    options = json.dumps({"dpi": dpi, "region": region}).encode("utf-8")
+def _render(
+    lib: ctypes.CDLL,
+    handle: Any,
+    page_number: int,
+    dpi: float,
+    region: str,
+    max_work: "int | None",
+) -> RenderedPage:
+    payload: "dict[str, Any]" = {"dpi": dpi, "region": region}
+    if max_work is not None:
+        payload["max_work"] = max_work
+    options = json.dumps(payload).encode("utf-8")
     out_len = ctypes.c_size_t(0)
     info = ctypes.c_void_p(None)
     result = lib.unpdf_render_page(
@@ -707,7 +717,13 @@ class Document:
             raise _native_error(self._lib)
         return count
 
-    def render_page(self, page_number: int, dpi: float = 150.0, region: str = "crop") -> RenderedPage:
+    def render_page(
+        self,
+        page_number: int,
+        dpi: float = 150.0,
+        region: str = "crop",
+        max_work: "int | None" = None,
+    ) -> RenderedPage:
         """Render a page (1-indexed) to a PNG — painted from the content this document
         was parsed from, so it is the same page text extraction reads.
 
@@ -715,12 +731,16 @@ class Document:
             page_number: Page number (1-indexed).
             dpi: Resolution; a page point is ``dpi / 72`` pixels.
             region: ``"crop"`` (what a viewer shows) or ``"media"`` (the whole sheet).
+            max_work: The most work painting may take, in the pixels each step is
+                charged — the page's own pixels, then what each fill, stroke, glyph,
+                image, clip and layer covers. ``None`` (the default) is unbounded.
 
         Raises:
             UnpdfError: ``kind == ErrorKind.PAGE_OUT_OF_RANGE`` for a page the
-                document does not have; ``INVALID_ARGUMENT`` for options it cannot use.
+                document does not have; ``RASTER_STOPPED`` for a page that would take
+                more than ``max_work``; ``INVALID_ARGUMENT`` for options it cannot use.
         """
-        return _render(self._lib, self._live(), page_number, dpi, region)
+        return _render(self._lib, self._live(), page_number, dpi, region, max_work)
 
     def get_page_stats(self, page_number: int) -> "dict[str, Any]":
         """Statistics for a page — see :func:`get_page_stats`."""
@@ -760,13 +780,14 @@ def render_page(
     dpi: float = 150.0,
     region: str = "crop",
     options: "dict[str, Any] | None" = None,
+    max_work: "int | None" = None,
 ) -> RenderedPage:
     """Render one page to a PNG. Opens the document for this call — to render
     several pages of one document, open it once with :class:`Document`. Rendering
     needs no text extraction, so none is done.
     """
     with Document(source, options) as doc:
-        return doc.render_page(page_number, dpi, region)
+        return doc.render_page(page_number, dpi, region, max_work)
 
 
 def get_page_count(

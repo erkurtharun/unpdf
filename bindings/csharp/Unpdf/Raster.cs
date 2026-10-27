@@ -20,6 +20,14 @@ public sealed class RenderPageOptions
 
     /// <summary>The box painted. Default <see cref="PageRegion.Crop"/>.</summary>
     public PageRegion Region { get; init; } = PageRegion.Crop;
+
+    /// <summary>
+    /// The most work painting the page may take, in the pixels each step of painting is
+    /// charged: the page's own pixels, then what each fill, stroke, glyph, image, clip and
+    /// layer covers. A page that would take more fails with
+    /// <see cref="UnpdfErrorKind.RasterStopped"/>. <c>null</c> (the default) is unbounded.
+    /// </summary>
+    public ulong? MaxWork { get; init; }
 }
 
 /// <summary>
@@ -113,4 +121,7 @@ internal sealed class RenderOptionsPayload
 
     [JsonPropertyName("region")]
     public string Region { get; init; } = "crop";
+
+    [JsonPropertyName("max_work")]
+    public ulong? MaxWork { get; init; }
 }
